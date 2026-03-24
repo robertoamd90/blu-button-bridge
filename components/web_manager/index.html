@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BluButtonBridge</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #222; }
+    header { background: #1a1a2e; color: #fff; padding: .75rem 1.5rem; display: flex; align-items: center; gap: .75rem; }
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    #status-bar { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; padding: .6rem 1.5rem; background: #fff; border-bottom: 1px solid #e0e0e0; font-size: .82rem; }
+    .pill { display: inline-flex; align-items: center; gap: .4rem; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
+    .dot.up   { background: #22c55e; }
+    .dot.down { background: #ef4444; }
+    .dot.warn { background: #f59e0b; }
+    nav { display: flex; background: #fff; border-bottom: 2px solid #e0e0e0; }
+    nav button { flex: 1; padding: .65rem .5rem; border: none; background: none; cursor: pointer; font-size: .88rem; color: #666; border-bottom: 3px solid transparent; margin-bottom: -2px; }
+    nav button.active { color: #1a1a2e; border-bottom-color: #1a1a2e; font-weight: 600; }
+    nav button:hover:not(.active) { background: #f9f9f9; color: #333; }
+    .tab { display: none; padding: 1.25rem; max-width: 560px; margin: 0 auto; }
+    .tab.active { display: block; }
+    .card { background: #fff; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .card h2 { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #888; margin-bottom: 1rem; }
+    label { display: block; font-size: .82rem; font-weight: 500; margin-bottom: .25rem; color: #555; }
+    input[type=text], input[type=password], textarea { width: 100%; padding: .45rem .65rem; border: 1px solid #d0d0d0; border-radius: 6px; font-size: .9rem; outline: none; transition: border-color .15s; margin-bottom: .75rem; background: #fff; }
+    input:focus, textarea:focus { border-color: #1a1a2e; }
+    textarea { resize: none; font-family: monospace; }
+    .row { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .btn { padding: .45rem 1.1rem; border: none; border-radius: 6px; cursor: pointer; font-size: .88rem; font-weight: 500; }
+    .btn:hover { opacity: .85; }
+    .btn-primary { background: #1a1a2e; color: #fff; }
+    .btn-danger  { background: #ef4444; color: #fff; }
+    .btn-secondary { background: #e5e7eb; color: #374151; }
+    .toast { margin-top: .75rem; padding: .5rem .75rem; border-radius: 6px; font-size: .82rem; display: none; }
+    .toast.ok  { background: #dcfce7; color: #166534; }
+    .toast.err { background: #fee2e2; color: #991b1b; }
+    .check-row { display: flex; align-items: center; gap: .5rem; margin-bottom: .75rem; }
+    .check-row input { width: auto; margin: 0; }
+    .check-row label { margin: 0; }
+    small { color: #888; font-size: .8rem; }
+    .current-val { font-size: .82rem; color: #555; margin-bottom: .75rem; padding: .35rem .6rem; background: #f8fafc; border-radius: 5px; border: 1px solid #e2e8f0; }
+    .scan-list { margin-top: .5rem; border: 1px solid #e0e0e0; border-radius: 6px; overflow: hidden; }
+    .scan-item { display: flex; justify-content: space-between; align-items: center; padding: .45rem .75rem; cursor: pointer; font-size: .88rem; border-bottom: 1px solid #f0f0f0; }
+    .scan-item:last-child { border-bottom: none; }
+    .scan-item:hover { background: #f0f4ff; }
+    .scan-ssid { font-weight: 500; }
+    .scan-rssi { font-size: .78rem; color: #888; }
+    .scan-rssi.good { color: #22c55e; }
+    .scan-rssi.ok   { color: #f59e0b; }
+    .scan-rssi.weak { color: #ef4444; }
+    .action-row { display: flex; align-items: center; justify-content: space-between; padding: .4rem 0; border-bottom: 1px solid #f0f0f0; font-size: .88rem; }
+    .action-row:last-child { border-bottom: none; }
+    .action-name { font-weight: 500; flex: 1; }
+    .action-sub { font-size: .75rem; color: #888; font-family: monospace; }
+    .event-block { margin-bottom: .6rem; padding: .5rem .7rem; border: 1px solid #e8e8e8; border-radius: 6px; }
+    .event-label { font-size: .78rem; font-weight: 700; text-transform: uppercase; color: #888; margin-bottom: .4rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
+  <h1>BluButtonBridge</h1>
+</header>
+
+<div id="status-bar">
+  <span class="pill"><span class="dot" id="d-wifi"></span><span id="t-wifi">WiFi: …</span></span>
+  <span class="pill"><span class="dot" id="d-mqtt"></span><span id="t-mqtt">MQTT: …</span></span>
+  <span class="pill"><span class="dot" id="d-ap"></span><span id="t-ap">AP: …</span></span>
+</div>
+
+<nav>
+  <button class="active" onclick="showTab('wifi',this)">WiFi</button>
+  <button onclick="showTab('mqtt',this)">MQTT</button>
+  <button onclick="showTab('ble',this)">BLE</button>
+  <button onclick="showTab('system',this)">System</button>
+</nav>
+
+<!-- WiFi -->
+<div id="tab-wifi" class="tab active">
+  <div class="card">
+    <h2>Network</h2>
+    <div id="wifi-current" class="current-val" style="display:none"></div>
+    <label>SSID</label>
+    <input id="wifi-ssid" type="text" placeholder="Network name">
+    <label>Password</label>
+    <input id="wifi-pass" type="password" placeholder="Password">
+    <div class="row" style="margin-bottom:.75rem">
+      <button class="btn btn-primary" onclick="wifiConnect()">Connect</button>
+      <button class="btn btn-secondary" onclick="wifiScan()">Scan</button>
+      <button class="btn btn-danger"  onclick="wifiClear()">Clear &amp; Disconnect</button>
+    </div>
+    <div id="scan-results" style="display:none">
+      <label>Available networks <small>(tap to select)</small></label>
+      <div id="scan-list" class="scan-list"></div>
+    </div>
+    <div id="toast-wifi" class="toast"></div>
+  </div>
+  <div class="card">
+    <h2>Access Point</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+      When active, broadcasts the configured network at 192.168.4.1
+      with automatic captive portal.
+    </p>
+    <div class="row" style="margin-bottom:0">
+      <button class="btn btn-primary" onclick="apStart()">Start AP</button>
+      <button class="btn btn-danger"  onclick="apStop()">Stop AP</button>
+    </div>
+    <div id="toast-ap" class="toast"></div>
+  </div>
+  <div class="card">
+    <h2>AP Settings</h2>
+    <div class="check-row">
+      <input type="checkbox" id="ap-enabled">
+      <label for="ap-enabled">Always on <small>(disable auto-management)</small></label>
+    </div>
+    <label>Network name (SSID)</label>
+    <input id="ap-ssid" type="text" maxlength="32" placeholder="BBB-XXYYZZ">
+    <label>Password <small>(min 8 chars — empty = open network)</small></label>
+    <input id="ap-pass" type="text" maxlength="63" placeholder="(empty = open network)">
+    <button class="btn btn-primary" onclick="apSaveConfig()">Save</button>
+    <div id="toast-ap-cfg" class="toast"></div>
+  </div>
+</div>
+
+<!-- MQTT -->
+<div id="tab-mqtt" class="tab">
+  <div class="card">
+    <h2>Broker</h2>
+    <label>Host</label>
+    <input id="mqtt-host" type="text" placeholder="homeassistant.local">
+    <label>Port</label>
+    <input id="mqtt-port" type="text" value="1883">
+    <label>Username</label>
+    <input id="mqtt-user" type="text" placeholder="optional">
+    <label>Password</label>
+    <input id="mqtt-pass" type="password" placeholder="optional">
+    <div class="check-row">
+      <input type="checkbox" id="mqtt-tls">
+      <label for="mqtt-tls">Use TLS</label>
+    </div>
+    <div class="row">
+      <button class="btn btn-primary" onclick="mqttConnect()">Connect</button>
+      <button class="btn btn-danger"  onclick="mqttClear()">Clear &amp; Disconnect</button>
+    </div>
+    <div id="toast-mqtt" class="toast"></div>
+  </div>
+  <div class="card">
+    <h2>Actions</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+      Named MQTT publish commands. Assign them to BLE button events in the BLE tab.
+    </p>
+    <div id="mqtt-action-list" style="margin-bottom:.75rem"><small style="color:#888">No actions defined</small></div>
+    <div id="mqtt-action-edit-card" style="display:none;margin-bottom:.75rem;padding:.75rem;border:1px solid #d0d0d0;border-radius:8px">
+      <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:#888;margin-bottom:.6rem" id="act-edit-title">Edit action</div>
+      <label>Name</label>
+      <input id="act-name" type="text" maxlength="31" placeholder="Toggle light">
+      <label>Topic</label>
+      <input id="act-topic" type="text" maxlength="63" placeholder="cmnd/light/POWER">
+      <label>Payload</label>
+      <input id="act-payload" type="text" maxlength="31" placeholder="TOGGLE">
+      <div class="row">
+        <button class="btn btn-primary" onclick="mqttActionSave()">Save</button>
+        <button class="btn btn-secondary" onclick="mqttActionCancel()">Cancel</button>
+      </div>
+      <div id="toast-mqtt-action" class="toast"></div>
+    </div>
+    <button class="btn btn-secondary" onclick="mqttActionNew()">+ Add action</button>
+  </div>
+</div>
+
+<!-- BLE Access -->
+<div id="tab-ble" class="tab">
+  <div class="card">
+    <h2>BLE Devices</h2>
+    <div id="ble-device-list"><small style="color:#888">No devices registered</small></div>
+    <div id="toast-ble" class="toast"></div>
+  </div>
+  <div id="ble-edit-card" class="card" style="display:none">
+    <h2>Edit Device</h2>
+    <div class="current-val" id="ble-edit-mac-label"></div>
+    <label>Label</label>
+    <input id="ble-edit-label" type="text" maxlength="31">
+    <div class="check-row">
+      <input type="checkbox" id="ble-edit-enabled">
+      <label for="ble-edit-enabled">Enabled</label>
+    </div>
+    <div id="ble-edit-events"></div>
+    <div id="ble-edit-import-warn" style="color:#b45309;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:.65rem .75rem;margin-bottom:.75rem;display:none">
+      Local key import error. The ESP controller could not load this key into its crypto engine.
+      Try re-importing the stored key first; if it persists, reboot the controller or replace the key.
+    </div>
+    <div id="ble-edit-decrypt-warn" style="color:#9a3412;background:#fff7ed;border:1px solid #fdba74;border-radius:6px;padding:.65rem .75rem;margin-bottom:.75rem;display:none">
+      Decrypt error. Advertisements are being received, but decryption keeps failing.
+      The BLE key is likely out of sync with the remote button.
+    </div>
+    <label>Encryption key <small>(leave empty to keep current)</small></label>
+    <input id="ble-edit-key" type="text" maxlength="32" placeholder="(unchanged)" style="font-family:monospace">
+    <div id="ble-edit-key-warn" style="color:#ef4444;font-size:.8rem;display:none">&#9888; Re-enter the 16-byte key as 32 hex characters to clear the decrypt error</div>
+    <div class="row">
+      <button class="btn btn-primary" onclick="bleSave()">Save</button>
+      <button class="btn btn-secondary" id="ble-edit-reimport-btn" onclick="bleRetryImport()" style="display:none">Retry Import</button>
+      <button class="btn btn-secondary" onclick="bleEditClose()">Cancel</button>
+    </div>
+    <div id="toast-ble-edit" class="toast"></div>
+  </div>
+  <div class="card">
+    <h2>Add Device</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+      Start scanning, then press the button on your Shelly Blu device to capture its MAC address.
+    </p>
+    <div id="ble-reg-idle">
+      <button class="btn btn-primary" onclick="bleRegStart()">Start Scanning</button>
+    </div>
+    <div id="ble-reg-active" style="display:none">
+      <p id="ble-reg-msg" style="font-size:.82rem;color:#1a1a2e;margin-bottom:.75rem">
+        Listening… press the button on the device now.
+      </p>
+      <div id="ble-reg-form" style="display:none">
+        <div class="current-val" id="ble-reg-mac-val"></div>
+        <label>Encryption key <small>(32 hex chars — from Shelly app → device info)</small></label>
+        <input id="ble-reg-key" type="text" maxlength="32" placeholder="0102...0F10">
+        <label>Label</label>
+        <input id="ble-reg-label" type="text" placeholder="Entrance button">
+        <div class="row">
+          <button class="btn btn-primary" onclick="bleRegConfirm()">Register</button>
+          <button class="btn btn-secondary" onclick="bleRegCancel()">Cancel</button>
+        </div>
+      </div>
+      <div id="ble-reg-wait">
+        <button class="btn btn-secondary" onclick="bleRegCancel()">Cancel</button>
+      </div>
+      <div id="toast-ble-reg" class="toast"></div>
+    </div>
+  </div>
+</div>
+
+<!-- System -->
+<div id="tab-system" class="tab">
+  <div class="card">
+    <h2>Device</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:1rem">
+      Reboot the device or restore factory defaults.
+      All settings are stored in NVS (non-volatile storage).
+    </p>
+    <div class="row">
+      <button class="btn btn-secondary" onclick="systemReboot()">Reboot</button>
+      <button class="btn btn-danger"    onclick="systemFactoryReset()">Factory Reset</button>
+    </div>
+    <div id="toast-system" class="toast"></div>
+  </div>
+</div>
+
+<script>
+  function showTab(name, btn) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    btn.classList.add('active');
+  }
+
+  function toast(id, ok, msg) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.className = 'toast ' + (ok ? 'ok' : 'err');
+    el.style.display = 'block';
+  }
+
+  function dotClass(val) {
+    const v = val.toUpperCase();
+    if (v === 'UP' || v === 'SYNCED' || v === 'CONFIGURED') return 'up';
+    if (v === 'ERROR') return 'warn';
+    return 'down';
+  }
+
+  function setStatus(dotId, textId, label, val) {
+    document.getElementById(textId).textContent = label + ': ' + val;
+    document.getElementById(dotId).className = 'dot ' + dotClass(val);
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  async function refreshStatus() {
+    try {
+      const d = await (await fetch('/api/status')).json();
+      setStatus('d-wifi', 't-wifi', 'WiFi', d.wifi);
+      setStatus('d-mqtt', 't-mqtt', 'MQTT', d.mqtt);
+      setStatus('d-ap',   't-ap',   'AP',   d.ap          ? 'up'         : 'down');
+    } catch(e) {}
+  }
+
+  async function api(url, method, body) {
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    return (await fetch(url, opts)).json();
+  }
+
+  // ── WiFi ─────────────────────────────────────────────────────────────────
+
+  async function loadWifiConfig() {
+    try {
+      const d = await (await fetch('/api/wifi/config')).json();
+      const cur = document.getElementById('wifi-current');
+      if (d.ssid_set) {
+        cur.textContent = 'Current SSID: ' + d.ssid;
+        cur.style.display = 'block';
+        document.getElementById('wifi-ssid').value = d.ssid;
+      }
+      document.getElementById('wifi-pass').placeholder =
+        d.password_set ? '(unchanged)' : 'Password';
+    } catch(e) {}
+  }
+
+  async function wifiConnect() {
+    const ssid = document.getElementById('wifi-ssid').value.trim();
+    if (!ssid) return toast('toast-wifi', false, 'SSID is required');
+    toast('toast-wifi', true, 'Connecting… (status bar will update)');
+    try {
+      await api('/api/wifi/connect', 'POST', {
+        ssid, password: document.getElementById('wifi-pass').value
+      });
+    } catch(e) {
+      toast('toast-wifi', true, 'Reconnecting… check status bar');
+    }
+  }
+
+  async function wifiClear() {
+    if (!confirm('Clear saved WiFi credentials and disconnect?')) return;
+    try {
+      const d = await api('/api/wifi', 'DELETE');
+      toast('toast-wifi', d.ok, 'Cleared');
+      document.getElementById('wifi-current').style.display = 'none';
+      document.getElementById('wifi-ssid').value = '';
+      document.getElementById('wifi-pass').placeholder = 'Password';
+      refreshStatus();
+    } catch(e) { toast('toast-wifi', false, 'Request failed'); }
+  }
+
+  function rssiClass(rssi) {
+    if (rssi >= -60) return 'good';
+    if (rssi >= -75) return 'ok';
+    return 'weak';
+  }
+
+  function selectSsid(ssid) {
+    document.getElementById('wifi-ssid').value = ssid;
+    document.getElementById('wifi-pass').focus();
+  }
+
+  async function wifiScan() {
+    const btn = event.target;
+    btn.disabled = true; btn.textContent = 'Scanning…';
+    document.getElementById('scan-results').style.display = 'none';
+    try {
+      const nets = await (await fetch('/api/wifi/scan')).json();
+      const list = document.getElementById('scan-list');
+      list.innerHTML = '';
+      if (!nets.length) {
+        list.innerHTML = '<div class="scan-item"><span>No networks found</span></div>';
+      } else {
+        nets.forEach(n => {
+          const item = document.createElement('div');
+          item.className = 'scan-item';
+          item.innerHTML =
+            '<span class="scan-ssid">' + escHtml(n.ssid) + '</span>' +
+            '<span class="scan-rssi ' + rssiClass(n.rssi) + '">' + n.rssi + ' dBm</span>';
+          item.onclick = () => selectSsid(n.ssid);
+          list.appendChild(item);
+        });
+      }
+      document.getElementById('scan-results').style.display = 'block';
+    } catch(e) { toast('toast-wifi', false, 'Scan failed'); }
+    btn.disabled = false; btn.textContent = 'Scan';
+  }
+
+  async function apStart() {
+    try {
+      const d = await api('/api/ap/start', 'POST', {});
+      toast('toast-ap', d.ok, d.ok ? 'AP started' : 'Error');
+      refreshStatus();
+    } catch(e) { toast('toast-ap', false, 'Request failed'); }
+  }
+
+  async function apStop() {
+    try {
+      const d = await api('/api/ap/stop', 'POST', {});
+      toast('toast-ap', d.ok, d.ok ? 'AP stopped' : 'Error');
+      refreshStatus();
+    } catch(e) { toast('toast-ap', false, 'Request failed'); }
+  }
+
+  async function loadApConfig() {
+    try {
+      const d = await (await fetch('/api/ap/config')).json();
+      document.getElementById('ap-enabled').checked = !!d.enabled;
+      document.getElementById('ap-ssid').value    = d.ssid     || '';
+      document.getElementById('ap-pass').value    = d.password || '';
+    } catch(e) {}
+  }
+
+  async function apSaveConfig() {
+    const ssid = document.getElementById('ap-ssid').value.trim();
+    const pass = document.getElementById('ap-pass').value;
+    if (!ssid) return toast('toast-ap-cfg', false, 'SSID is required');
+    if (pass.length > 0 && pass.length < 8)
+      return toast('toast-ap-cfg', false, 'Password must be at least 8 characters (or empty for open network)');
+    try {
+      const d = await api('/api/ap/config', 'POST', {
+        enabled:  document.getElementById('ap-enabled').checked,
+        ssid, password: pass,
+      });
+      toast('toast-ap-cfg', d.ok, d.ok ? 'Saved!' : (d.error || 'Error'));
+      refreshStatus();
+    } catch(e) { toast('toast-ap-cfg', false, 'Request failed'); }
+  }
+
+  // ── MQTT broker ───────────────────────────────────────────────────────────
+
+  async function loadMqttConfig() {
+    try {
+      const d = await (await fetch('/api/mqtt/config')).json();
+      if (!d.configured) return;
+      document.getElementById('mqtt-host').value = d.host || '';
+      document.getElementById('mqtt-port').value = d.port || 1883;
+      document.getElementById('mqtt-user').value = d.username || '';
+      document.getElementById('mqtt-tls').checked = !!d.tls;
+      document.getElementById('mqtt-pass').placeholder =
+        d.password_set ? '(unchanged)' : 'optional';
+    } catch(e) {}
+  }
+
+  async function mqttConnect() {
+    const host = document.getElementById('mqtt-host').value.trim();
+    if (!host) return toast('toast-mqtt', false, 'Host is required');
+    toast('toast-mqtt', true, 'Connecting… (status bar will update)');
+    try {
+      await api('/api/mqtt/connect', 'POST', {
+        host,
+        port:     parseInt(document.getElementById('mqtt-port').value) || 1883,
+        username: document.getElementById('mqtt-user').value,
+        password: document.getElementById('mqtt-pass').value,
+        tls:      document.getElementById('mqtt-tls').checked
+      });
+    } catch(e) { toast('toast-mqtt', false, 'Request failed'); }
+  }
+
+  async function mqttClear() {
+    if (!confirm('Clear saved MQTT credentials and disconnect?')) return;
+    try {
+      const d = await api('/api/mqtt', 'DELETE');
+      toast('toast-mqtt', d.ok, 'Cleared');
+      refreshStatus();
+    } catch(e) { toast('toast-mqtt', false, 'Request failed'); }
+  }
+
+  // ── MQTT Actions ──────────────────────────────────────────────────────────
+
+  let _mqttActions  = [];   // [{idx, name, topic, payload}]
+  let _actEditIdx   = -1;   // -1 = new, >=0 = editing existing
+
+  async function loadMqttActions() {
+    try {
+      _mqttActions = await (await fetch('/api/mqtt/actions')).json();
+      renderMqttActions();
+    } catch(e) {}
+  }
+
+  function renderMqttActions() {
+    const el = document.getElementById('mqtt-action-list');
+    if (!_mqttActions.length) {
+      el.innerHTML = '<small style="color:#888">No actions defined</small>';
+      return;
+    }
+    el.innerHTML = _mqttActions.map(a => `
+      <div class="action-row">
+        <div>
+          <div class="action-name">${escHtml(a.name)}</div>
+          <div class="action-sub">${escHtml(a.topic)} &rarr; ${escHtml(a.payload)}</div>
+        </div>
+        <div class="row" style="margin:0;gap:.3rem">
+          <button class="btn btn-secondary" style="padding:.25rem .6rem;font-size:.8rem"
+            onclick="mqttActionEdit(${a.idx})">Edit</button>
+          <button class="btn btn-danger" style="padding:.25rem .6rem;font-size:.8rem"
+            onclick="mqttActionDelete(${a.idx})">Del</button>
+        </div>
+      </div>`).join('');
+  }
+
+  function mqttActionNew() {
+    _actEditIdx = -1;
+    document.getElementById('act-edit-title').textContent = 'New action';
+    document.getElementById('act-name').value    = '';
+    document.getElementById('act-topic').value   = '';
+    document.getElementById('act-payload').value = '';
+    document.getElementById('mqtt-action-edit-card').style.display = 'block';
+    document.getElementById('toast-mqtt-action').style.display = 'none';
+  }
+
+  function mqttActionEdit(idx) {
+    const a = _mqttActions.find(x => x.idx === idx);
+    if (!a) return;
+    _actEditIdx = idx;
+    document.getElementById('act-edit-title').textContent = 'Edit action';
+    document.getElementById('act-name').value    = a.name;
+    document.getElementById('act-topic').value   = a.topic;
+    document.getElementById('act-payload').value = a.payload;
+    document.getElementById('mqtt-action-edit-card').style.display = 'block';
+    document.getElementById('toast-mqtt-action').style.display = 'none';
+  }
+
+  function mqttActionCancel() {
+    document.getElementById('mqtt-action-edit-card').style.display = 'none';
+    _actEditIdx = -1;
+  }
+
+  async function mqttActionSave() {
+    const name    = document.getElementById('act-name').value.trim();
+    const topic   = document.getElementById('act-topic').value.trim();
+    const payload = document.getElementById('act-payload').value;
+    if (!name)  return toast('toast-mqtt-action', false, 'Name is required');
+    if (!topic) return toast('toast-mqtt-action', false, 'Topic is required');
+    try {
+      let d;
+      if (_actEditIdx < 0) {
+        d = await api('/api/mqtt/actions', 'POST', { name, topic, payload });
+      } else {
+        d = await api('/api/mqtt/action', 'PUT', { idx: _actEditIdx, name, topic, payload });
+      }
+      if (d.ok) {
+        mqttActionCancel();
+        loadMqttActions();
+      } else {
+        toast('toast-mqtt-action', false, d.error || 'Failed');
+      }
+    } catch(e) { toast('toast-mqtt-action', false, 'Request failed'); }
+  }
+
+  async function mqttActionDelete(idx) {
+    const a = _mqttActions.find(x => x.idx === idx);
+    if (!confirm('Delete action "' + (a ? a.name : idx) + '"?')) return;
+    try {
+      const d = await api('/api/mqtt/action', 'DELETE', { idx });
+      if (d.ok) loadMqttActions();
+      else toast('toast-mqtt-action', false, d.error || 'Failed');
+    } catch(e) {}
+  }
+
+  // ── System ────────────────────────────────────────────────────────────────
+
+  async function systemReboot() {
+    if (!confirm('Reboot the device?')) return;
+    try {
+      await api('/api/system/reboot', 'POST', {});
+      toast('toast-system', true, 'Rebooting… reconnect in a few seconds');
+    } catch(e) { toast('toast-system', true, 'Rebooting… reconnect in a few seconds'); }
+  }
+
+  async function systemFactoryReset() {
+    if (!confirm('Factory reset will erase ALL saved settings (WiFi, MQTT, AP, BLE). Continue?')) return;
+    if (!confirm('Are you sure? This cannot be undone.')) return;
+    try {
+      await api('/api/system/factory-reset', 'POST', {});
+      toast('toast-system', true, 'Resetting… device will reboot');
+    } catch(e) { toast('toast-system', true, 'Resetting… device will reboot'); }
+  }
+
+  // ── BLE ───────────────────────────────────────────────────────────────────
+
+  let _bleEditMac  = null;
+  let _bleRegTimer = null;
+  const BLE_EVENTS = ['single_press','double_press','triple_press','long_press'];
+  const BLE_LABELS = ['Single press','Double press','Triple press','Long press'];
+
+  function eventBlockHtml(evKey, evLabel, mask) {
+    if (!_mqttActions.length) {
+      return `<div class="event-block">
+        <div class="event-label">${evLabel}</div>
+        <small style="color:#888">No actions defined — add actions in the MQTT tab first</small>
+      </div>`;
+    }
+    const checks = _mqttActions.map(a => {
+      const checked = (mask & (1 << a.idx)) ? 'checked' : '';
+      return `<div class="check-row" style="margin-bottom:.3rem">
+        <input type="checkbox" id="ev-${evKey}-${a.idx}" ${checked}>
+        <label for="ev-${evKey}-${a.idx}" style="font-size:.85rem">${escHtml(a.name)}</label>
+      </div>`;
+    }).join('');
+    return `<div class="event-block"><div class="event-label">${evLabel}</div>${checks}</div>`;
+  }
+
+  function getEventMask(evKey) {
+    let mask = 0;
+    _mqttActions.forEach(a => {
+      const el = document.getElementById('ev-' + evKey + '-' + a.idx);
+      if (el && el.checked) mask |= (1 << a.idx);
+    });
+    return mask;
+  }
+
+  function renderBleDevices(devs) {
+    const el = document.getElementById('ble-device-list');
+    if (!devs.length) { el.innerHTML = '<small style="color:#888">No devices registered</small>'; return; }
+    el.innerHTML = devs.map(d => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:.5rem 0;border-bottom:1px solid #f0f0f0">
+        <div>
+          <div style="font-weight:600;font-size:.9rem">
+            ${escHtml(d.label)}
+            ${d.key_import_error ? ' <span style="color:#b45309;font-size:.75rem;font-weight:600">&#9888; Import Error</span>' : ''}
+            ${d.decrypt_error ? ' <span style="color:#c2410c;font-size:.75rem;font-weight:600">&#9888; Decrypt Error</span>' : ''}
+          </div>
+          <div style="font-size:.76rem;color:#888;font-family:monospace">${d.mac}</div>
+        </div>
+        <div class="row" style="margin:0;gap:.35rem">
+          <button class="btn btn-secondary" style="padding:.3rem .7rem;font-size:.8rem"
+            onclick='bleEdit(${JSON.stringify(d)})'>Edit</button>
+          <button class="btn btn-danger" style="padding:.3rem .7rem;font-size:.8rem"
+            onclick="bleDelete('${d.mac}')">Delete</button>
+        </div>
+      </div>`).join('');
+  }
+
+  async function loadBleDevices() {
+    try {
+      const devs = await (await fetch('/api/ble/devices')).json();
+      renderBleDevices(devs);
+      return devs;
+    } catch(e) {}
+    return [];
+  }
+
+  async function bleEdit(d) {
+    _bleEditMac = d.mac;
+    await loadMqttActions();
+    document.getElementById('ble-edit-mac-label').textContent = 'MAC: ' + d.mac;
+    document.getElementById('ble-edit-label').value   = d.label;
+    document.getElementById('ble-edit-enabled').checked = d.enabled;
+    document.getElementById('ble-edit-events').innerHTML =
+      BLE_EVENTS.map((ev, i) => eventBlockHtml(ev, BLE_LABELS[i], d[ev] || 0)).join('');
+    document.getElementById('ble-edit-key').value = '';
+    document.getElementById('ble-edit-import-warn').style.display = d.key_import_error ? 'block' : 'none';
+    document.getElementById('ble-edit-decrypt-warn').style.display = d.decrypt_error ? 'block' : 'none';
+    const keyWarn = document.getElementById('ble-edit-key-warn');
+    keyWarn.style.display = d.decrypt_error ? 'block' : 'none';
+    document.getElementById('ble-edit-reimport-btn').style.display = d.key_import_error ? 'inline-block' : 'none';
+    document.getElementById('ble-edit-card').style.display = 'block';
+    document.getElementById('ble-edit-card').scrollIntoView({behavior:'smooth'});
+  }
+
+  function bleEditClose() {
+    _bleEditMac = null;
+    document.getElementById('ble-edit-card').style.display = 'none';
+  }
+
+  async function bleSave() {
+    if (!_bleEditMac) return;
+    const body = {
+      mac:          _bleEditMac,
+      label:        document.getElementById('ble-edit-label').value.trim(),
+      enabled:      document.getElementById('ble-edit-enabled').checked,
+      single_press: getEventMask('single_press'),
+      double_press: getEventMask('double_press'),
+      triple_press: getEventMask('triple_press'),
+      long_press:   getEventMask('long_press'),
+    };
+    const key = document.getElementById('ble-edit-key').value.trim();
+    if (key && !/^[0-9a-fA-F]{32}$/.test(key)) {
+      return toast('toast-ble-edit', false, 'Key must be 32 hex characters');
+    }
+    if (key) body.key = key;
+    try {
+      const d = await api('/api/ble/device', 'PATCH', body);
+      if (d.ok) { toast('toast-ble-edit', true, 'Saved!'); loadBleDevices(); }
+      else toast('toast-ble-edit', false, d.error || 'Failed');
+    } catch(e) { toast('toast-ble-edit', false, 'Request failed'); }
+  }
+
+  async function bleRetryImport() {
+    if (!_bleEditMac) return;
+    try {
+      const d = await api('/api/ble/device/reimport', 'POST', {mac: _bleEditMac});
+      if (d.ok) {
+        toast('toast-ble-edit', true, 'Local key import retried');
+        const devs = await loadBleDevices();
+        const updated = devs.find(x => x.mac === _bleEditMac);
+        if (updated) await bleEdit(updated);
+      } else {
+        toast('toast-ble-edit', false, d.error || 'Re-import failed');
+      }
+    } catch(e) { toast('toast-ble-edit', false, 'Request failed'); }
+  }
+
+  async function bleDelete(mac) {
+    if (!confirm('Remove device ' + mac + '?')) return;
+    try {
+      const d = await api('/api/ble/device', 'DELETE', {mac});
+      toast('toast-ble', d.ok, d.ok ? 'Deleted' : (d.error || 'Failed'));
+      loadBleDevices();
+      if (_bleEditMac === mac) bleEditClose();
+    } catch(e) { toast('toast-ble', false, 'Request failed'); }
+  }
+
+  async function bleRegStart() {
+    try {
+      await api('/api/ble/register/start', 'POST', {});
+      document.getElementById('ble-reg-idle').style.display   = 'none';
+      document.getElementById('ble-reg-active').style.display = 'block';
+      document.getElementById('ble-reg-form').style.display   = 'none';
+      document.getElementById('ble-reg-wait').style.display   = 'block';
+      document.getElementById('ble-reg-msg').textContent = 'Listening… press the button on the device now.';
+      _bleRegTimer = setInterval(bleRegPoll, 1500);
+    } catch(e) { toast('toast-ble', false, 'Failed to start scanning'); }
+  }
+
+  async function bleRegPoll() {
+    try {
+      const d = await (await fetch('/api/ble/register/status')).json();
+      if (d.pending_mac) {
+        document.getElementById('ble-reg-mac-val').textContent = 'Detected: ' + d.pending_mac;
+        document.getElementById('ble-reg-key').value   = '';
+        document.getElementById('ble-reg-label').value = '';
+        document.getElementById('ble-reg-form').style.display = 'block';
+        document.getElementById('ble-reg-wait').style.display = 'none';
+        document.getElementById('ble-reg-msg').textContent = 'Device detected! Enter key and label.';
+        clearInterval(_bleRegTimer);
+        _bleRegTimer = null;
+      } else if (!d.registering) {
+        bleRegReset();
+      }
+    } catch(e) {}
+  }
+
+  async function bleRegConfirm() {
+    const mac   = document.getElementById('ble-reg-mac-val').textContent.replace('Detected: ','').trim();
+    const key   = document.getElementById('ble-reg-key').value.trim();
+    const label = document.getElementById('ble-reg-label').value.trim();
+    if (key.length !== 32) return toast('toast-ble-reg', false, 'Key must be 32 hex characters');
+    if (!label)            return toast('toast-ble-reg', false, 'Label is required');
+    try {
+      const d = await api('/api/ble/register/confirm', 'POST', {mac, key, label});
+      if (d.ok) {
+        toast('toast-ble-reg', true, 'Device registered!');
+        bleRegReset();
+        loadBleDevices();
+      } else {
+        toast('toast-ble-reg', false, d.error || 'Failed');
+      }
+    } catch(e) { toast('toast-ble-reg', false, 'Request failed'); }
+  }
+
+  async function bleRegCancel() {
+    try { await api('/api/ble/register/cancel', 'POST', {}); } catch(e) {}
+    bleRegReset();
+  }
+
+  function bleRegReset() {
+    if (_bleRegTimer) { clearInterval(_bleRegTimer); _bleRegTimer = null; }
+    document.getElementById('ble-reg-idle').style.display   = 'block';
+    document.getElementById('ble-reg-active').style.display = 'none';
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+
+  refreshStatus();
+  loadWifiConfig();
+  loadMqttConfig();
+  loadMqttActions();
+  loadApConfig();
+  loadBleDevices();
+  setInterval(refreshStatus, 5000);
+</script>
+</body>
+</html>
