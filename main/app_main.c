@@ -4,6 +4,7 @@
 #include "mqtt_manager.h"
 #include "web_manager.h"
 #include "ble_access.h"
+#include "gpio_manager.h"
 
 // ── app_main ──────────────────────────────────────────────────────────────────
 
@@ -26,7 +27,7 @@ void app_main(void)
         nvs_flash_erase();
         nvs_flash_init();
     }
-
+    gpio_manager_init();
     wifi_init();
     mqtt_init();
     ble_access_init();
