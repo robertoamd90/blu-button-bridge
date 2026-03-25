@@ -9,6 +9,8 @@
 #include "esp_event.h"
 #include "esp_wifi.h"
 #include "wifi_manager.h"
+#include "gpio_manager.h"
+#include "ble_access.h"
 
 #include <stdlib.h>
 #include "esp_netif.h"
@@ -285,7 +287,9 @@ void wifi_start_ap(void)
         vTaskDelay(pdMS_TO_TICKS(200)); // DNS task exits within ~100ms
     }
     s_ap_active = true;
+    ble_access_scan_stop();
     esp_wifi_set_mode(WIFI_MODE_APSTA);
+    gpio_manager_set_system_led_ap_mode(true);
 
     wifi_config_t ap_cfg = { 0 };
     strncpy((char *)ap_cfg.ap.ssid, s_ap_cfg.ssid, sizeof(ap_cfg.ap.ssid) - 1);
@@ -310,6 +314,8 @@ void wifi_stop_ap(void)
     if (!s_ap_active) return;
     s_ap_active = false; // signals DNS task to exit its loop
     esp_wifi_set_mode(WIFI_MODE_STA);
+    gpio_manager_set_system_led_ap_mode(false);
+    ble_access_scan_start();
     printf("WiFi: AP stopped\n");
 }
 
