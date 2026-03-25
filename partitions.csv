@@ -1,5 +1,7 @@
-# Custom partition table for ESP32 with 2MB flash + BT stack
+# Partition table for ESP32 with 4MB flash — OTA enabled
 # Name,   Type, SubType,  Offset,   Size
 nvs,       data, nvs,      0x9000,   0x6000,
-phy_init,  data, phy,      0xF000,   0x1000,
-factory,   app,  factory,  0x10000,  0x1F0000,
+otadata,   data, ota,      0xF000,   0x2000,
+phy_init,  data, phy,      0x11000,  0x1000,
+ota_0,     app,  ota_0,    0x20000,  0x1F0000,
+ota_1,     app,  ota_1,    0x210000, 0x1F0000,
