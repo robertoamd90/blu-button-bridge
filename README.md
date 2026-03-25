@@ -254,6 +254,7 @@ All endpoints are served on port 80 with JSON payloads.
 | POST | `/api/mqtt/actions` | Add action `{name, topic, payload}` |
 | PUT | `/api/mqtt/action` | Update action `{idx, name, topic, payload}` |
 | DELETE | `/api/mqtt/action` | Delete action `{idx}` |
+| POST | `/api/mqtt/action/test` | Trigger action manually `{idx}` |
 
 ### GPIO
 | Method | Endpoint | Description |
@@ -263,6 +264,7 @@ All endpoints are served on port 80 with JSON payloads.
 | POST | `/api/gpio/actions` | Add action |
 | PUT | `/api/gpio/action` | Update action |
 | DELETE | `/api/gpio/action` | Delete action `{idx}` |
+| POST | `/api/gpio/action/test` | Trigger action manually `{idx}` |
 
 ### BLE
 | Method | Endpoint | Description |

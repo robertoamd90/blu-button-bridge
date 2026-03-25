@@ -462,6 +462,25 @@ static esp_err_t handle_mqtt_action_update(httpd_req_t *req)
     return ESP_OK;
 }
 
+// POST /api/mqtt/action/test  {"idx":N}
+static esp_err_t handle_mqtt_action_test(httpd_req_t *req)
+{
+    char body[64];
+    if (read_body(req, body, sizeof(body)) != ESP_OK)
+        return send_error(req, "body too large");
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return send_error(req, "invalid json");
+
+    cJSON *idx_item = cJSON_GetObjectItem(root, "idx");
+    if (!cJSON_IsNumber(idx_item)) { cJSON_Delete(root); return send_error(req, "idx required"); }
+    int idx = (int)idx_item->valuedouble;
+    cJSON_Delete(root);
+
+    mqtt_action_trigger(idx);
+    send_json(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 // DELETE /api/mqtt/action  {"idx":N}
 static esp_err_t handle_mqtt_action_delete(httpd_req_t *req)
 {
@@ -620,6 +639,25 @@ static esp_err_t handle_gpio_action_update(httpd_req_t *req)
     if (err == ESP_ERR_NOT_FOUND)     return send_error(req, "action not found");
     if (err != ESP_OK)                return send_error(req, "could not save action");
 
+    send_json(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+// POST /api/gpio/action/test  {"idx":N}
+static esp_err_t handle_gpio_action_test(httpd_req_t *req)
+{
+    char body[64];
+    if (read_body(req, body, sizeof(body)) != ESP_OK)
+        return send_error(req, "body too large");
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return send_error(req, "invalid json");
+
+    cJSON *idx_item = cJSON_GetObjectItem(root, "idx");
+    if (!cJSON_IsNumber(idx_item)) { cJSON_Delete(root); return send_error(req, "idx required"); }
+    int idx = (int)idx_item->valuedouble;
+    cJSON_Delete(root);
+
+    gpio_action_trigger(idx);
     send_json(req, "{\"ok\":true}");
     return ESP_OK;
 }
@@ -912,12 +950,14 @@ void web_manager_init(void)
         { .uri = "/api/mqtt/actions",         .method = HTTP_POST,   .handler = handle_mqtt_action_add     },
         { .uri = "/api/mqtt/action",          .method = HTTP_PUT,    .handler = handle_mqtt_action_update  },
         { .uri = "/api/mqtt/action",          .method = HTTP_DELETE, .handler = handle_mqtt_action_delete  },
+        { .uri = "/api/mqtt/action/test",     .method = HTTP_POST,   .handler = handle_mqtt_action_test    },
         { .uri = "/api/mqtt",                 .method = HTTP_DELETE, .handler = handle_mqtt_delete         },
         { .uri = "/api/gpio/actions",         .method = HTTP_GET,    .handler = handle_gpio_actions_get    },
         { .uri = "/api/gpio/pins",            .method = HTTP_GET,    .handler = handle_gpio_pins_get       },
         { .uri = "/api/gpio/actions",         .method = HTTP_POST,   .handler = handle_gpio_action_add     },
         { .uri = "/api/gpio/action",          .method = HTTP_PUT,    .handler = handle_gpio_action_update  },
         { .uri = "/api/gpio/action",          .method = HTTP_DELETE, .handler = handle_gpio_action_delete  },
+        { .uri = "/api/gpio/action/test",     .method = HTTP_POST,   .handler = handle_gpio_action_test    },
         { .uri = "/api/ap/start",             .method = HTTP_POST,   .handler = handle_ap_start            },
         { .uri = "/api/ap/stop",              .method = HTTP_POST,   .handler = handle_ap_stop             },
         { .uri = "/api/ap/config",            .method = HTTP_GET,    .handler = handle_ap_config_get       },
