@@ -40,6 +40,7 @@ static void on_wifi_got_ip(void *arg, esp_event_base_t base, int32_t id, void *d
 {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
     s_status = WIFI_STATUS_UP;
+    xTimerStop(s_reconnect_timer, 0);
     xEventGroupSetBits(wifi_events, WIFI_CONNECTED_BIT);
     ESP_LOGI(TAG, "IP: " IPSTR, IP2STR(&event->ip_info.ip));
     if (s_ap_active && !s_ap_cfg.enabled) {
@@ -49,8 +50,10 @@ static void on_wifi_got_ip(void *arg, esp_event_base_t base, int32_t id, void *d
 
 static void reconnect_timer_cb(TimerHandle_t t)
 {
-    if (s_status == WIFI_STATUS_DOWN || s_status == WIFI_STATUS_ERROR)
+    if (s_status == WIFI_STATUS_DOWN || s_status == WIFI_STATUS_ERROR) {
+        esp_wifi_disconnect();   // cancel any stuck attempt
         esp_wifi_connect();
+    }
 }
 
 static void on_wifi_disconnected(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -58,8 +61,8 @@ static void on_wifi_disconnected(void *arg, esp_event_base_t base, int32_t id, v
     xEventGroupClearBits(wifi_events, WIFI_CONNECTED_BIT);
     if (s_status == WIFI_STATUS_UP || s_status == WIFI_STATUS_ERROR) {
         s_status = WIFI_STATUS_DOWN;
-        xTimerStart(s_reconnect_timer, 0);
     }
+    // Timer is periodic — no need to restart it here
 }
 
 // ── Private helpers ────────────────────────────────────────────────────────────
@@ -94,6 +97,8 @@ static void wifi_connect(const char *ssid, const char *pass)
     vTaskDelay(pdMS_TO_TICKS(300));   // let the disconnect event settle
 
     wifi_config_t cfg = {};
+    cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     strncpy((char *)cfg.sta.ssid,     ssid, sizeof(cfg.sta.ssid));
     strncpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password));
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
@@ -190,10 +195,11 @@ void wifi_init(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
     esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_ps(WIFI_PS_NONE);
     esp_wifi_start();
 
     wifi_events = xEventGroupCreate();
-    s_reconnect_timer = xTimerCreate("wifi_rc", pdMS_TO_TICKS(5000), pdFALSE, NULL, reconnect_timer_cb);
+    s_reconnect_timer = xTimerCreate("wifi_rc", pdMS_TO_TICKS(5000), pdTRUE, NULL, reconnect_timer_cb);
     esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP,        on_wifi_got_ip,        NULL);
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_wifi_disconnected,  NULL);
 
