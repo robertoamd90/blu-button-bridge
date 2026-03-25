@@ -40,7 +40,9 @@ static void on_wifi_got_ip(void *arg, esp_event_base_t base, int32_t id, void *d
     s_status = WIFI_STATUS_UP;
     xEventGroupSetBits(wifi_events, WIFI_CONNECTED_BIT);
     printf("WiFi IP: " IPSTR "\n", IP2STR(&event->ip_info.ip));
-    // AP stopping is done from task context in wifi_connect() — safe to call esp_wifi_set_mode there
+    if (s_ap_active && !s_ap_cfg.enabled) {
+        wifi_stop_ap();
+    }
 }
 
 static void reconnect_timer_cb(TimerHandle_t t)
@@ -99,13 +101,10 @@ static void wifi_connect(const char *ssid, const char *pass)
                                            false, true, pdMS_TO_TICKS(10000));
     if (bits & WIFI_CONNECTED_BIT) {
         printf("WiFi connected: %s\n", ssid);
-        // Stop AP only if it was auto-started (not when user forced it always-on)
-        if (s_ap_active && !s_ap_cfg.enabled) {
-            wifi_stop_ap();
-        }
     } else {
         s_status = WIFI_STATUS_ERROR;
-        printf("WiFi: connection failed\n");
+        printf("WiFi: connection failed, retrying in 5s\n");
+        xTimerStart(s_reconnect_timer, 0);
     }
 }
 
