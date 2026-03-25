@@ -10,10 +10,12 @@
 
 void app_main(void)
 {
+    // Silence noisy library logs to keep the serial monitor readable.
+    // To re-enable for debugging, change ESP_LOG_NONE → ESP_LOG_DEBUG
+    // and ESP_LOG_WARN → ESP_LOG_DEBUG, then rebuild.
     esp_log_level_set("mqtt_client",    ESP_LOG_NONE);
     esp_log_level_set("transport_base", ESP_LOG_NONE);
     esp_log_level_set("esp-tls",        ESP_LOG_NONE);
-    // Suppress NimBLE host stack verbosity
     esp_log_level_set("NimBLE",         ESP_LOG_WARN);
     esp_log_level_set("NimBLE_host",    ESP_LOG_WARN);
     esp_log_level_set("ble_att",        ESP_LOG_WARN);
