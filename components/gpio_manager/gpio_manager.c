@@ -7,8 +7,11 @@
 #include "freertos/timers.h"
 #include "driver/gpio.h"
 #include "nvs.h"
+#include "nvs_flash.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "gpio_manager.h"
+#include "wifi_manager.h"
 
 static const char *TAG = "gpio_manager";
 static const char *NVS_NS = "gpio";
@@ -28,6 +31,8 @@ static TimerHandle_t      s_system_led_timer = NULL;
 static StaticTimer_t      s_system_led_timer_buf;
 static bool               s_system_led_level = false;
 static TaskHandle_t       s_system_led_test_task = NULL;
+
+static void gpio_manager_start_boot_button_monitor(void);
 
 static bool action_slot_used(const gpio_action_t *action)
 {
@@ -258,6 +263,7 @@ void gpio_manager_init(void)
     xSemaphoreGive(s_mutex);
 
     s_initialized = true;
+    gpio_manager_start_boot_button_monitor();
 }
 
 void gpio_manager_set_system_led_ap_mode(bool active)
@@ -459,4 +465,74 @@ esp_err_t gpio_action_trigger(int idx)
 
     xSemaphoreGive(s_mutex);
     return ESP_OK;
+}
+
+// ── BOOT button monitor (GPIO 0) ────────────────────────────────────────────
+// Hold 3 s → start AP;  hold 10 s → factory reset + reboot.
+// LED feedback: slow blink at 3 s, fast blink at 10 s.
+
+#define BOOT_BTN_GPIO       0
+#define BOOT_POLL_MS        100
+#define BOOT_AP_THRESHOLD_MS    3000
+#define BOOT_RESET_THRESHOLD_MS 10000
+
+static void boot_button_task(void *arg)
+{
+    (void)arg;
+
+    gpio_config_t btn_cfg = {
+        .pin_bit_mask = 1ULL << BOOT_BTN_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&btn_cfg);
+
+    bool ap_triggered = false;
+
+    while (true) {
+        // Wait for button press (LOW = pressed, has internal pull-up)
+        if (gpio_get_level(BOOT_BTN_GPIO) != 0) {
+            ap_triggered = false;
+            vTaskDelay(pdMS_TO_TICKS(BOOT_POLL_MS));
+            continue;
+        }
+
+        uint32_t held_ms = 0;
+        while (gpio_get_level(BOOT_BTN_GPIO) == 0) {
+            vTaskDelay(pdMS_TO_TICKS(BOOT_POLL_MS));
+            held_ms += BOOT_POLL_MS;
+
+            // Visual feedback: slow blink after 3 s
+            if (held_ms >= BOOT_AP_THRESHOLD_MS && held_ms < BOOT_RESET_THRESHOLD_MS) {
+                gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO,
+                               (held_ms / 300) % 2);
+            }
+            // Visual feedback: fast blink after 10 s
+            if (held_ms >= BOOT_RESET_THRESHOLD_MS) {
+                gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO,
+                               (held_ms / 100) % 2);
+            }
+        }
+
+        gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
+
+        if (held_ms >= BOOT_RESET_THRESHOLD_MS) {
+            ESP_LOGW(TAG, "BOOT held %"PRIu32" ms — factory reset", held_ms);
+            nvs_flash_erase();
+            esp_restart();
+        } else if (held_ms >= BOOT_AP_THRESHOLD_MS && !ap_triggered) {
+            ESP_LOGI(TAG, "BOOT held %"PRIu32" ms — starting AP", held_ms);
+            if (!wifi_ap_is_active()) {
+                wifi_start_ap();
+            }
+            ap_triggered = true;
+        }
+    }
+}
+
+static void gpio_manager_start_boot_button_monitor(void)
+{
+    xTaskCreate(boot_button_task, "boot_btn", 2048, NULL, 2, NULL);
 }

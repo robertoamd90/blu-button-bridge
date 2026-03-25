@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "gpio_manager.c"
     INCLUDE_DIRS "include"
-    PRIV_REQUIRES nvs_flash esp_driver_gpio
+    PRIV_REQUIRES nvs_flash esp_driver_gpio wifi_manager esp_system
 )
