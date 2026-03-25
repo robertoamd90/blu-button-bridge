@@ -12,6 +12,7 @@
 #include "host/ble_gap.h"
 #include "psa/crypto.h"
 #include "mqtt_manager.h"
+#include "gpio_manager.h"
 #include "ble_access.h"
 
 static const char *TAG = "ble_access";
@@ -32,6 +33,8 @@ static uint8_t              s_decrypt_failures[BLE_ACCESS_MAX_DEVICES];
 static int                  s_count        = 0;
 static bool                 s_registering  = false;
 static bool                 s_has_pending  = false;
+static bool                 s_scan_enabled = true;
+static bool                 s_ble_ready    = false;
 static uint8_t              s_pending_mac[6];
 static SemaphoreHandle_t    s_mutex;
 
@@ -99,13 +102,24 @@ static int bthome_obj_len(uint8_t obj_id)
     }
 }
 
-static uint16_t get_event_mask(const ble_device_t *dev, uint8_t event)
+static uint16_t get_mqtt_event_mask(const ble_device_t *dev, uint8_t event)
 {
     switch (event) {
         case 1: return dev->single_press;
         case 2: return dev->double_press;
         case 3: return dev->triple_press;
         case 4: return dev->long_press;
+        default: return 0;
+    }
+}
+
+static uint16_t get_gpio_event_mask(const ble_device_t *dev, uint8_t event)
+{
+    switch (event) {
+        case 1: return dev->gpio_single_press;
+        case 2: return dev->gpio_double_press;
+        case 3: return dev->gpio_triple_press;
+        case 4: return dev->gpio_long_press;
         default: return 0;
     }
 }
@@ -302,14 +316,22 @@ static void handle_adv(const uint8_t mac[6], const uint8_t *adv, uint8_t adv_len
 
         if (obj_id == BTN_OBJ_ID) {
             uint8_t event_val = plaintext[pi];
-            uint16_t mask = get_event_mask(dev, event_val);
+            uint16_t mqtt_mask = get_mqtt_event_mask(dev, event_val);
+            uint16_t gpio_mask = get_gpio_event_mask(dev, event_val);
             char label[32];
             strlcpy(label, dev->label, sizeof(label));
             xSemaphoreGive(s_mutex);
-            ESP_LOGI(TAG, "'%s' button event=%u mask=0x%04X", label, event_val, mask);
+            ESP_LOGI(TAG,
+                     "'%s' button event=%u mqtt_mask=0x%04X gpio_mask=0x%04X",
+                     label, event_val, mqtt_mask, gpio_mask);
             for (int b = 0; b < MQTT_MAX_ACTIONS; b++) {
-                if (mask & (1u << b)) {
+                if (mqtt_mask & (1u << b)) {
                     mqtt_action_trigger(b);
+                }
+            }
+            for (int b = 0; b < GPIO_ACTION_MAX; b++) {
+                if (gpio_mask & (1u << b)) {
+                    gpio_action_trigger(b);
                 }
             }
             return;
@@ -332,7 +354,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
     return 0;
 }
 
-static void on_sync(void)
+static void start_scan(void)
 {
     struct ble_gap_disc_params dp = {0};
     dp.passive           = 1;
@@ -340,6 +362,14 @@ static void on_sync(void)
     int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &dp, gap_event_cb, NULL);
     if (rc != 0) {
         ESP_LOGW(TAG, "ble_gap_disc failed: %d", rc);
+    }
+}
+
+static void on_sync(void)
+{
+    s_ble_ready = true;
+    if (s_scan_enabled) {
+        start_scan();
     }
 }
 
@@ -388,6 +418,24 @@ void ble_access_init(void)
     ble_hs_cfg.sync_cb  = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
     nimble_port_freertos_init(host_task);
+}
+
+void ble_access_scan_stop(void)
+{
+    s_scan_enabled = false;
+    if (s_ble_ready) {
+        ble_gap_disc_cancel();
+        ESP_LOGI(TAG, "BLE scan stopped");
+    }
+}
+
+void ble_access_scan_start(void)
+{
+    s_scan_enabled = true;
+    if (s_ble_ready) {
+        start_scan();
+        ESP_LOGI(TAG, "BLE scan started");
+    }
 }
 
 esp_err_t ble_access_register_start(void)
@@ -509,6 +557,10 @@ esp_err_t ble_access_device_update(const uint8_t mac[6], const ble_device_t *upd
             s_devices[i].double_press = updated->double_press;
             s_devices[i].triple_press = updated->triple_press;
             s_devices[i].long_press   = updated->long_press;
+            s_devices[i].gpio_single_press = updated->gpio_single_press;
+            s_devices[i].gpio_double_press = updated->gpio_double_press;
+            s_devices[i].gpio_triple_press = updated->gpio_triple_press;
+            s_devices[i].gpio_long_press   = updated->gpio_long_press;
             esp_err_t err = nvs_save();
             xSemaphoreGive(s_mutex);
             return err;
