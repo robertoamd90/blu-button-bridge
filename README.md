@@ -29,7 +29,7 @@ Press a Shelly button → the ESP32 receives the encrypted BLE advertisement, de
 | **GPIO** | Up to 16 output actions; configurable pin, idle state, active level, action type (set on / set off / toggle), auto-restore delay |
 | **WiFi** | STA + SoftAP coexistence; captive-portal DNS for first-time setup; auto-reconnect (5 s retry); WPA2-PSK on AP |
 | **Web UI** | Single-page app served from the ESP32; tabs for WiFi, MQTT, GPIO, BLE, System; real-time status bar; mobile-friendly |
-| **System** | Reboot and factory-reset from the UI; NVS persistence across reboots; logging suppression for clean serial output |
+| **System** | OTA firmware update via file upload; full config backup/restore (JSON); reboot and factory-reset from the UI; NVS persistence across reboots |
 
 ---
 
@@ -80,7 +80,7 @@ blu-button-bridge/
 │   ├── mqtt_manager/           # MQTT client, named publish actions
 │   ├── gpio_manager/           # GPIO output actions, system LED
 │   └── web_manager/            # HTTP server, REST API, embedded index.html
-├── partitions.csv              # Custom partition table (NVS + factory)
+├── partitions.csv              # Custom partition table (NVS + OTA_0 + OTA_1)
 ├── sdkconfig                   # ESP-IDF configuration
 └── CMakeLists.txt
 ```
@@ -208,10 +208,10 @@ Served directly from the ESP32 on port 80 — no external dependencies.
 | Tab | Functions |
 |-----|-----------|
 | **WiFi** | Connect to a network, scan nearby APs, manage AP settings, clear credentials |
-| **MQTT** | Configure broker, manage publish actions (add / edit / delete) |
-| **GPIO** | Manage GPIO output actions (add / edit / delete), pin validation |
+| **MQTT** | Configure broker, manage publish actions (add / edit / delete / test) |
+| **GPIO** | Manage GPIO output actions (add / edit / delete / test), pin validation |
 | **BLE** | List devices, register new devices, assign events to actions, manage keys |
-| **System** | Reboot, factory reset |
+| **System** | OTA firmware update, config backup & restore, reboot, factory reset |
 
 ### Status bar
 
@@ -284,6 +284,9 @@ All endpoints are served on port 80 with JSON payloads.
 |--------|----------|-------------|
 | POST | `/api/system/reboot` | Restart the ESP32 |
 | POST | `/api/system/factory-reset` | Erase all NVS and restart |
+| POST | `/api/system/ota` | Upload firmware binary (OTA update) |
+| GET | `/api/system/config` | Download full configuration (JSON) |
+| POST | `/api/system/config` | Restore configuration from JSON and reboot |
 
 ---
 
