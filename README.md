@@ -125,11 +125,21 @@ The firmware builds a 13-byte nonce (`MAC[6 MSB-first] + UUID[2 LE] + DevInfo[1]
 
 > **Note:** Shelly deviates from the BTHome spec in two ways: Counter comes before MIC (not after), and the nonce MAC bytes are in MSB-first (display) order. This is handled transparently.
 
+### Shelly app setup (required)
+
+Encryption **must** be enabled on the Shelly BLU Button before it can work with BluButtonBridge. In the Shelly BLE app:
+
+1. Open the device → **Settings** → **Encryption**
+2. Enable encryption — the app will generate an AES key
+3. Copy the key from **Settings → Keys** — you will need it during registration
+
+Without encryption enabled, the button sends unencrypted BTHome advertisements which this firmware does not support.
+
 ### Device registration
 
 1. Web UI → **BLE** tab → **Start registration**
 2. Press the Shelly button; the pending MAC appears
-3. Enter the 32-hex-char AES key (from the Shelly app: *Device → Settings → Keys*), a label, and assign MQTT/GPIO actions per event
+3. Enter the 32-hex-char AES key (copied from the Shelly app), a label, and assign MQTT/GPIO actions per event
 4. **Save** — the device is stored in NVS and active immediately
 
 ### Button events
