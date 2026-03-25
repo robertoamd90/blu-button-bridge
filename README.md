@@ -61,10 +61,22 @@ Each of the 4 button events (single, double, triple, long press) can independent
 
 | Pin | Usage |
 |-----|-------|
-| **2** | System LED (blue) — blinks during AP mode |
+| **0** | BOOT button — hold 3 s to start AP, hold 10 s to factory reset |
+| **2** | System LED (blue) — blinks during AP mode, visual feedback for BOOT button |
 | 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33 | Available for user GPIO actions |
 
 Boot-sensitive and flash pins are excluded from user configuration.
+
+### BOOT button (field recovery)
+
+If the device can't connect to WiFi (e.g. changed password, network down), use the physical BOOT button on the ESP32 board:
+
+| Action | Hold time | LED feedback |
+|--------|-----------|-------------|
+| **Start AP** | 3 seconds | Slow blink |
+| **Factory reset** | 10 seconds | Fast blink |
+
+After releasing the button, the action triggers. The AP starts on `192.168.4.1` so you can reconfigure via the web UI from your phone.
 
 ---
 
