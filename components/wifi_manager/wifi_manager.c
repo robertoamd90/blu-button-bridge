@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
@@ -11,6 +10,7 @@
 #include "wifi_manager.h"
 #include "gpio_manager.h"
 #include "ble_access.h"
+#include "esp_log.h"
 
 #include <stdlib.h>
 #include "esp_netif.h"
@@ -18,6 +18,8 @@
 #include "lwip/sockets.h"
 
 #define WIFI_CONNECTED_BIT  BIT0
+
+static const char *TAG = "wifi";
 
 static EventGroupHandle_t   wifi_events;
 static volatile wifi_status_t s_status = WIFI_STATUS_NOT_CONFIG;
@@ -39,7 +41,7 @@ static void on_wifi_got_ip(void *arg, esp_event_base_t base, int32_t id, void *d
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
     s_status = WIFI_STATUS_UP;
     xEventGroupSetBits(wifi_events, WIFI_CONNECTED_BIT);
-    printf("WiFi IP: " IPSTR "\n", IP2STR(&event->ip_info.ip));
+    ESP_LOGI(TAG, "IP: " IPSTR, IP2STR(&event->ip_info.ip));
     if (s_ap_active && !s_ap_cfg.enabled) {
         wifi_stop_ap();
     }
@@ -100,10 +102,10 @@ static void wifi_connect(const char *ssid, const char *pass)
     EventBits_t bits = xEventGroupWaitBits(wifi_events, WIFI_CONNECTED_BIT,
                                            false, true, pdMS_TO_TICKS(10000));
     if (bits & WIFI_CONNECTED_BIT) {
-        printf("WiFi connected: %s\n", ssid);
+        ESP_LOGI(TAG, "connected: %s", ssid);
     } else {
         s_status = WIFI_STATUS_ERROR;
-        printf("WiFi: connection failed, retrying in 5s\n");
+        ESP_LOGW(TAG, "connection failed, retrying in 5s");
         xTimerStart(s_reconnect_timer, 0);
     }
 }
@@ -207,7 +209,7 @@ void wifi_init(void)
     }
 
     if (has_creds) {
-        printf("WiFi: connecting to %s\n", ssid);
+        ESP_LOGI(TAG, "connecting to %s", ssid);
         wifi_connect(ssid, pass);
     }
 }
@@ -303,9 +305,9 @@ void wifi_start_ap(void)
     }
     esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
     xTaskCreate(dns_server_task, "dns_srv", 4096, NULL, 5, &s_dns_task_handle);
-    printf("WiFi: AP '%s' (%s) started at 192.168.4.1\n",
-           s_ap_cfg.ssid,
-           strlen(s_ap_cfg.password) >= 8 ? "WPA2" : "open");
+    ESP_LOGI(TAG, "AP '%s' (%s) started at 192.168.4.1",
+             s_ap_cfg.ssid,
+             strlen(s_ap_cfg.password) >= 8 ? "WPA2" : "open");
 }
 
 void wifi_stop_ap(void)
@@ -315,7 +317,7 @@ void wifi_stop_ap(void)
     esp_wifi_set_mode(WIFI_MODE_STA);
     gpio_manager_set_system_led_ap_mode(false);
     ble_access_scan_start();
-    printf("WiFi: AP stopped\n");
+    ESP_LOGI(TAG, "AP stopped");
 }
 
 bool wifi_ap_is_active(void)

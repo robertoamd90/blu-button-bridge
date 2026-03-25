@@ -373,7 +373,7 @@ void mqtt_init(void)
 
     if (load_credentials(host, sizeof(host), port_str, sizeof(port_str),
                          user, sizeof(user), pass, sizeof(pass), &use_tls)) {
-        printf("MQTT: connecting to %s:%s%s\n", host, port_str, use_tls ? " (TLS)" : "");
+        ESP_LOGI(TAG, "connecting to %s:%s%s", host, port_str, use_tls ? " (TLS)" : "");
         mqtt_connect_broker(host, (uint32_t)atoi(port_str), user, pass, use_tls);
     }
 }
