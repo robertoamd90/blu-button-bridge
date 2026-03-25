@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "wifi_manager.h"
 #include "mqtt_manager.h"
+#include "gpio_manager.h"
 #include "web_manager.h"
 #include "ble_access.h"
 
@@ -481,6 +482,169 @@ static esp_err_t handle_mqtt_action_delete(httpd_req_t *req)
     return ESP_OK;
 }
 
+// ── GPIO action handlers ──────────────────────────────────────────────────────
+
+// GET /api/gpio/actions
+static esp_err_t handle_gpio_actions_get(httpd_req_t *req)
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < GPIO_ACTION_MAX; i++) {
+        gpio_action_t a;
+        if (gpio_action_get(i, &a) == ESP_OK) {
+            cJSON *obj = cJSON_CreateObject();
+            cJSON_AddNumberToObject(obj, "idx", i);
+            cJSON_AddStringToObject(obj, "name", a.name);
+            cJSON_AddNumberToObject(obj, "gpio", a.gpio_num);
+            cJSON_AddBoolToObject(obj, "idle_on", a.idle_on);
+            cJSON_AddBoolToObject(obj, "active_low", a.active_low);
+            cJSON_AddStringToObject(obj, "action", gpio_action_kind_str((gpio_action_kind_t)a.action));
+            cJSON_AddNumberToObject(obj, "restore_delay_ms", a.restore_delay_ms);
+            cJSON_AddItemToArray(arr, obj);
+        }
+    }
+    send_cjson(req, arr);
+    return ESP_OK;
+}
+
+// GET /api/gpio/pins
+static esp_err_t handle_gpio_pins_get(httpd_req_t *req)
+{
+    uint8_t gpios[16];
+    int n = gpio_action_get_allowed_gpios(gpios, 16);
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < n; i++) {
+        cJSON_AddItemToArray(arr, cJSON_CreateNumber(gpios[i]));
+    }
+    send_cjson(req, arr);
+    return ESP_OK;
+}
+
+static esp_err_t read_gpio_action_body(httpd_req_t *req, char *body, size_t body_len,
+                                       gpio_action_t *out, int *idx_out, bool require_idx)
+{
+    if (read_body(req, body, body_len) != ESP_OK) {
+        send_error(req, "body too large");
+        return ESP_FAIL;
+    }
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        send_error(req, "invalid json");
+        return ESP_FAIL;
+    }
+
+    cJSON *idx_item   = cJSON_GetObjectItem(root, "idx");
+    cJSON *name_item  = cJSON_GetObjectItem(root, "name");
+    cJSON *gpio_item  = cJSON_GetObjectItem(root, "gpio");
+    cJSON *idle_item  = cJSON_GetObjectItem(root, "idle_on");
+    cJSON *low_item   = cJSON_GetObjectItem(root, "active_low");
+    cJSON *act_item   = cJSON_GetObjectItem(root, "action");
+    cJSON *delay_item = cJSON_GetObjectItem(root, "restore_delay_ms");
+
+    if (require_idx && !cJSON_IsNumber(idx_item)) {
+        cJSON_Delete(root);
+        send_error(req, "idx required");
+        return ESP_FAIL;
+    }
+    if (!cJSON_IsString(name_item) || strlen(name_item->valuestring) == 0) {
+        cJSON_Delete(root);
+        send_error(req, "name required");
+        return ESP_FAIL;
+    }
+    if (!cJSON_IsNumber(gpio_item)) {
+        cJSON_Delete(root);
+        send_error(req, "gpio required");
+        return ESP_FAIL;
+    }
+    if (!cJSON_IsString(act_item)) {
+        cJSON_Delete(root);
+        send_error(req, "action required");
+        return ESP_FAIL;
+    }
+
+    gpio_action_kind_t action_kind;
+    if (!gpio_action_kind_parse(act_item->valuestring, &action_kind)) {
+        cJSON_Delete(root);
+        send_error(req, "action must be on, off, or toggle");
+        return ESP_FAIL;
+    }
+
+    memset(out, 0, sizeof(*out));
+    strlcpy(out->name, name_item->valuestring, sizeof(out->name));
+    out->gpio_num = (uint8_t)gpio_item->valuedouble;
+    out->idle_on = cJSON_IsTrue(idle_item);
+    out->active_low = cJSON_IsTrue(low_item);
+    out->action = (uint8_t)action_kind;
+    out->restore_delay_ms = cJSON_IsNumber(delay_item) && delay_item->valuedouble > 0
+                          ? (uint32_t)delay_item->valuedouble
+                          : 0;
+    if (idx_out) *idx_out = cJSON_IsNumber(idx_item) ? (int)idx_item->valuedouble : -1;
+
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// POST /api/gpio/actions
+static esp_err_t handle_gpio_action_add(httpd_req_t *req)
+{
+    char body[256];
+    gpio_action_t action;
+    esp_err_t parse_err = read_gpio_action_body(req, body, sizeof(body), &action, NULL, false);
+    if (parse_err != ESP_OK) return ESP_OK;
+
+    int idx = -1;
+    esp_err_t err = gpio_action_add(&action, &idx);
+    if (err == ESP_ERR_INVALID_ARG)   return send_error(req, "invalid gpio action");
+    if (err == ESP_ERR_INVALID_STATE) return send_error(req, "gpio already used by another action");
+    if (err == ESP_ERR_NO_MEM)        return send_error(req, "action list full");
+    if (err != ESP_OK)                return send_error(req, "could not save action");
+
+    cJSON *obj = cJSON_CreateObject();
+    cJSON_AddBoolToObject(obj, "ok", true);
+    cJSON_AddNumberToObject(obj, "idx", idx);
+    send_cjson(req, obj);
+    return ESP_OK;
+}
+
+// PUT /api/gpio/action
+static esp_err_t handle_gpio_action_update(httpd_req_t *req)
+{
+    char body[256];
+    gpio_action_t action;
+    int idx = -1;
+    esp_err_t parse_err = read_gpio_action_body(req, body, sizeof(body), &action, &idx, true);
+    if (parse_err != ESP_OK) return ESP_OK;
+
+    esp_err_t err = gpio_action_update(idx, &action);
+    if (err == ESP_ERR_INVALID_ARG)   return send_error(req, "invalid gpio action");
+    if (err == ESP_ERR_INVALID_STATE) return send_error(req, "gpio already used by another action");
+    if (err == ESP_ERR_NOT_FOUND)     return send_error(req, "action not found");
+    if (err != ESP_OK)                return send_error(req, "could not save action");
+
+    send_json(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+// DELETE /api/gpio/action  {"idx":N}
+static esp_err_t handle_gpio_action_delete(httpd_req_t *req)
+{
+    char body[64];
+    if (read_body(req, body, sizeof(body)) != ESP_OK)
+        return send_error(req, "body too large");
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return send_error(req, "invalid json");
+
+    cJSON *idx_item = cJSON_GetObjectItem(root, "idx");
+    if (!cJSON_IsNumber(idx_item)) { cJSON_Delete(root); return send_error(req, "idx required"); }
+    int idx = (int)idx_item->valuedouble;
+    cJSON_Delete(root);
+
+    esp_err_t err = gpio_action_delete(idx);
+    if (err == ESP_ERR_NOT_FOUND) return send_error(req, "action not found");
+    if (err != ESP_OK)            return send_error(req, "could not delete action");
+    send_json(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 // GET /api/ble/devices
 static esp_err_t handle_ble_devices(httpd_req_t *req)
 {
@@ -502,6 +666,10 @@ static esp_err_t handle_ble_devices(httpd_req_t *req)
         cJSON_AddNumberToObject(obj, "double_press",     d->double_press);
         cJSON_AddNumberToObject(obj, "triple_press",     d->triple_press);
         cJSON_AddNumberToObject(obj, "long_press",       d->long_press);
+        cJSON_AddNumberToObject(obj, "gpio_single_press", d->gpio_single_press);
+        cJSON_AddNumberToObject(obj, "gpio_double_press", d->gpio_double_press);
+        cJSON_AddNumberToObject(obj, "gpio_triple_press", d->gpio_triple_press);
+        cJSON_AddNumberToObject(obj, "gpio_long_press",   d->gpio_long_press);
         cJSON_AddItemToArray(arr, obj);
     }
     free(devs);
@@ -584,8 +752,8 @@ static esp_err_t handle_ble_reg_confirm(httpd_req_t *req)
     return ESP_OK;
 }
 
-// PATCH /api/ble/device  {mac, label, enabled, single_press, double_press, triple_press, long_press, key?}
-// Event fields are integer bitmasks referencing MQTT action slots.
+// PATCH /api/ble/device
+// Event fields are integer bitmasks referencing MQTT or GPIO action slots.
 static esp_err_t handle_ble_device_update(httpd_req_t *req)
 {
     char body[256];
@@ -616,6 +784,10 @@ static esp_err_t handle_ble_device_update(httpd_req_t *req)
     cJSON *dp_item  = cJSON_GetObjectItem(root, "double_press");
     cJSON *tp_item  = cJSON_GetObjectItem(root, "triple_press");
     cJSON *lp_item  = cJSON_GetObjectItem(root, "long_press");
+    cJSON *gsp_item = cJSON_GetObjectItem(root, "gpio_single_press");
+    cJSON *gdp_item = cJSON_GetObjectItem(root, "gpio_double_press");
+    cJSON *gtp_item = cJSON_GetObjectItem(root, "gpio_triple_press");
+    cJSON *glp_item = cJSON_GetObjectItem(root, "gpio_long_press");
     cJSON *key_item = cJSON_GetObjectItem(root, "key");
 
     if (cJSON_IsString(lbl_item)) strlcpy(current.label, lbl_item->valuestring, sizeof(current.label));
@@ -624,6 +796,10 @@ static esp_err_t handle_ble_device_update(httpd_req_t *req)
     if (cJSON_IsNumber(dp_item))  current.double_press = (uint16_t)dp_item->valuedouble;
     if (cJSON_IsNumber(tp_item))  current.triple_press = (uint16_t)tp_item->valuedouble;
     if (cJSON_IsNumber(lp_item))  current.long_press   = (uint16_t)lp_item->valuedouble;
+    if (cJSON_IsNumber(gsp_item)) current.gpio_single_press = (uint16_t)gsp_item->valuedouble;
+    if (cJSON_IsNumber(gdp_item)) current.gpio_double_press = (uint16_t)gdp_item->valuedouble;
+    if (cJSON_IsNumber(gtp_item)) current.gpio_triple_press = (uint16_t)gtp_item->valuedouble;
+    if (cJSON_IsNumber(glp_item)) current.gpio_long_press   = (uint16_t)glp_item->valuedouble;
 
     if (cJSON_IsString(key_item) &&
             strlen(key_item->valuestring) > 0 &&
@@ -712,7 +888,7 @@ void web_manager_init(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size        = 10240;
-    config.max_uri_handlers  = 28;
+    config.max_uri_handlers  = 36;
     config.max_open_sockets  = 4;
     config.lru_purge_enable  = true;
     config.uri_match_fn      = httpd_uri_match_wildcard;
@@ -737,6 +913,11 @@ void web_manager_init(void)
         { .uri = "/api/mqtt/action",          .method = HTTP_PUT,    .handler = handle_mqtt_action_update  },
         { .uri = "/api/mqtt/action",          .method = HTTP_DELETE, .handler = handle_mqtt_action_delete  },
         { .uri = "/api/mqtt",                 .method = HTTP_DELETE, .handler = handle_mqtt_delete         },
+        { .uri = "/api/gpio/actions",         .method = HTTP_GET,    .handler = handle_gpio_actions_get    },
+        { .uri = "/api/gpio/pins",            .method = HTTP_GET,    .handler = handle_gpio_pins_get       },
+        { .uri = "/api/gpio/actions",         .method = HTTP_POST,   .handler = handle_gpio_action_add     },
+        { .uri = "/api/gpio/action",          .method = HTTP_PUT,    .handler = handle_gpio_action_update  },
+        { .uri = "/api/gpio/action",          .method = HTTP_DELETE, .handler = handle_gpio_action_delete  },
         { .uri = "/api/ap/start",             .method = HTTP_POST,   .handler = handle_ap_start            },
         { .uri = "/api/ap/stop",              .method = HTTP_POST,   .handler = handle_ap_stop             },
         { .uri = "/api/ap/config",            .method = HTTP_GET,    .handler = handle_ap_config_get       },

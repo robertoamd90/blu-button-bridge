@@ -24,7 +24,7 @@
     .card { background: #fff; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
     .card h2 { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #888; margin-bottom: 1rem; }
     label { display: block; font-size: .82rem; font-weight: 500; margin-bottom: .25rem; color: #555; }
-    input[type=text], input[type=password], textarea { width: 100%; padding: .45rem .65rem; border: 1px solid #d0d0d0; border-radius: 6px; font-size: .9rem; outline: none; transition: border-color .15s; margin-bottom: .75rem; background: #fff; }
+    input[type=text], input[type=password], input[type=number], select, textarea { width: 100%; padding: .45rem .65rem; border: 1px solid #d0d0d0; border-radius: 6px; font-size: .9rem; outline: none; transition: border-color .15s; margin-bottom: .75rem; background: #fff; }
     input:focus, textarea:focus { border-color: #1a1a2e; }
     textarea { resize: none; font-family: monospace; }
     .row { display: flex; gap: .5rem; flex-wrap: wrap; }
@@ -74,6 +74,7 @@
 <nav>
   <button class="active" onclick="showTab('wifi',this)">WiFi</button>
   <button onclick="showTab('mqtt',this)">MQTT</button>
+  <button onclick="showTab('gpio',this)">GPIO</button>
   <button onclick="showTab('ble',this)">BLE</button>
   <button onclick="showTab('system',this)">System</button>
 </nav>
@@ -102,7 +103,8 @@
     <h2>Access Point</h2>
     <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
       When active, broadcasts the configured network at 192.168.4.1
-      with automatic captive portal.
+      with automatic captive portal.<br>
+      <strong>Note:</strong> BLE scanning is paused while the AP is active.
     </p>
     <div class="row" style="margin-bottom:0">
       <button class="btn btn-primary" onclick="apStart()">Start AP</button>
@@ -171,6 +173,48 @@
   </div>
 </div>
 
+<!-- GPIO -->
+<div id="tab-gpio" class="tab">
+  <div class="card">
+    <h2>Output Actions</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+      Named GPIO output commands. The blue status LED is reserved by the firmware and is not assignable here.
+    </p>
+    <div id="gpio-action-list" style="margin-bottom:.75rem"><small style="color:#888">No GPIO actions defined</small></div>
+    <div id="gpio-action-edit-card" style="display:none;margin-bottom:.75rem;padding:.75rem;border:1px solid #d0d0d0;border-radius:8px">
+      <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:#888;margin-bottom:.6rem" id="gpio-edit-title">Edit GPIO action</div>
+      <label>Name</label>
+      <input id="gpio-name" type="text" maxlength="31" placeholder="Relay pulse">
+      <label>GPIO</label>
+      <select id="gpio-pin"></select>
+      <label>Idle State</label>
+      <select id="gpio-idle">
+        <option value="off">OFF</option>
+        <option value="on">ON</option>
+      </select>
+      <label>Active Level</label>
+      <select id="gpio-active-level">
+        <option value="high">High</option>
+        <option value="low">Low</option>
+      </select>
+      <label>Action</label>
+      <select id="gpio-action-kind">
+        <option value="on">ON</option>
+        <option value="off">OFF</option>
+        <option value="toggle">TOGGLE</option>
+      </select>
+      <label>Restore Delay (ms) <small>(0 = keep the new state)</small></label>
+      <input id="gpio-restore" type="number" min="0" step="1" value="0">
+      <div class="row">
+        <button class="btn btn-primary" onclick="gpioActionSave()">Save</button>
+        <button class="btn btn-secondary" onclick="gpioActionCancel()">Cancel</button>
+      </div>
+      <div id="toast-gpio-action" class="toast"></div>
+    </div>
+    <button class="btn btn-secondary" onclick="gpioActionNew()">+ Add action</button>
+  </div>
+</div>
+
 <!-- BLE Access -->
 <div id="tab-ble" class="tab">
   <div class="card">
@@ -187,7 +231,10 @@
       <input type="checkbox" id="ble-edit-enabled">
       <label for="ble-edit-enabled">Enabled</label>
     </div>
-    <div id="ble-edit-events"></div>
+    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:#888;margin-bottom:.4rem">MQTT Actions</div>
+    <div id="ble-edit-mqtt-events"></div>
+    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:#888;margin:.2rem 0 .4rem">GPIO Actions</div>
+    <div id="ble-edit-gpio-events"></div>
     <div id="ble-edit-import-warn" style="color:#b45309;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:.65rem .75rem;margin-bottom:.75rem;display:none">
       Local key import error. The ESP controller could not load this key into its crypto engine.
       Try re-importing the stored key first; if it persists, reboot the controller or replace the key.
@@ -549,6 +596,147 @@
     } catch(e) {}
   }
 
+  // ── GPIO Actions ──────────────────────────────────────────────────────────
+
+  let _gpioActions = [];
+  let _gpioPins = [];
+  let _gpioEditIdx = -1;
+
+  async function loadGpioPins() {
+    try {
+      _gpioPins = await (await fetch('/api/gpio/pins')).json();
+    } catch(e) {
+      _gpioPins = [];
+    }
+  }
+
+  async function loadGpioActions() {
+    try {
+      _gpioActions = await (await fetch('/api/gpio/actions')).json();
+      renderGpioActions();
+    } catch(e) {}
+  }
+
+  function gpioSubtitle(a) {
+    const idle = a.idle_on ? 'idle ON' : 'idle OFF';
+    const level = a.active_low ? 'active-low' : 'active-high';
+    const restore = a.restore_delay_ms > 0 ? ('restore ' + a.restore_delay_ms + ' ms') : 'persistent';
+    return `GPIO${a.gpio} · ${idle} · ${a.action.toUpperCase()} · ${level} · ${restore}`;
+  }
+
+  function renderGpioActions() {
+    const el = document.getElementById('gpio-action-list');
+    if (!_gpioActions.length) {
+      el.innerHTML = '<small style="color:#888">No GPIO actions defined</small>';
+      return;
+    }
+    el.innerHTML = _gpioActions.map(a => `
+      <div class="action-row">
+        <div>
+          <div class="action-name">${escHtml(a.name)}</div>
+          <div class="action-sub">${escHtml(gpioSubtitle(a))}</div>
+        </div>
+        <div class="row" style="margin:0;gap:.3rem">
+          <button class="btn btn-secondary" style="padding:.25rem .6rem;font-size:.8rem"
+            onclick="gpioActionEdit(${a.idx})">Edit</button>
+          <button class="btn btn-danger" style="padding:.25rem .6rem;font-size:.8rem"
+            onclick="gpioActionDelete(${a.idx})">Del</button>
+        </div>
+      </div>`).join('');
+  }
+
+  function gpioActionRefreshOptions(selected) {
+    const used = new Set(_gpioActions
+      .filter(a => a.idx !== _gpioEditIdx)
+      .map(a => Number(a.gpio)));
+    const select = document.getElementById('gpio-pin');
+    const options = _gpioPins
+      .filter(gpio => gpio === selected || !used.has(Number(gpio)))
+      .map(gpio => `<option value="${gpio}">GPIO ${gpio}</option>`)
+      .join('');
+    select.innerHTML = options || '<option value="">No GPIO available</option>';
+    if (selected !== undefined && selected !== null && select.querySelector(`option[value="${selected}"]`)) {
+      select.value = String(selected);
+    }
+  }
+
+  function gpioActionNew() {
+    _gpioEditIdx = -1;
+    document.getElementById('gpio-edit-title').textContent = 'New GPIO action';
+    document.getElementById('gpio-name').value = '';
+    document.getElementById('gpio-idle').value = 'off';
+    document.getElementById('gpio-active-level').value = 'high';
+    document.getElementById('gpio-action-kind').value = 'on';
+    document.getElementById('gpio-restore').value = '0';
+    gpioActionRefreshOptions();
+    document.getElementById('gpio-action-edit-card').style.display = 'block';
+    document.getElementById('toast-gpio-action').style.display = 'none';
+  }
+
+  function gpioActionEdit(idx) {
+    const a = _gpioActions.find(x => x.idx === idx);
+    if (!a) return;
+    _gpioEditIdx = idx;
+    document.getElementById('gpio-edit-title').textContent = 'Edit GPIO action';
+    document.getElementById('gpio-name').value = a.name;
+    document.getElementById('gpio-idle').value = a.idle_on ? 'on' : 'off';
+    document.getElementById('gpio-active-level').value = a.active_low ? 'low' : 'high';
+    document.getElementById('gpio-action-kind').value = a.action;
+    document.getElementById('gpio-restore').value = String(a.restore_delay_ms || 0);
+    gpioActionRefreshOptions(Number(a.gpio));
+    document.getElementById('gpio-pin').value = String(a.gpio);
+    document.getElementById('gpio-action-edit-card').style.display = 'block';
+    document.getElementById('toast-gpio-action').style.display = 'none';
+  }
+
+  function gpioActionCancel() {
+    document.getElementById('gpio-action-edit-card').style.display = 'none';
+    _gpioEditIdx = -1;
+  }
+
+  async function gpioActionSave() {
+    const name = document.getElementById('gpio-name').value.trim();
+    const gpio = parseInt(document.getElementById('gpio-pin').value, 10);
+    const restore = parseInt(document.getElementById('gpio-restore').value || '0', 10);
+    if (!name) return toast('toast-gpio-action', false, 'Name is required');
+    if (Number.isNaN(gpio)) return toast('toast-gpio-action', false, 'GPIO is required');
+    if (Number.isNaN(restore) || restore < 0) return toast('toast-gpio-action', false, 'Restore delay must be 0 or more');
+
+    const body = {
+      name,
+      gpio,
+      idle_on: document.getElementById('gpio-idle').value === 'on',
+      active_low: document.getElementById('gpio-active-level').value === 'low',
+      action: document.getElementById('gpio-action-kind').value,
+      restore_delay_ms: restore,
+    };
+
+    try {
+      let d;
+      if (_gpioEditIdx < 0) {
+        d = await api('/api/gpio/actions', 'POST', body);
+      } else {
+        d = await api('/api/gpio/action', 'PUT', Object.assign({ idx: _gpioEditIdx }, body));
+      }
+      if (d.ok) {
+        gpioActionCancel();
+        await loadGpioActions();
+      } else {
+        toast('toast-gpio-action', false, d.error || 'Failed');
+      }
+    } catch(e) { toast('toast-gpio-action', false, 'Request failed'); }
+  }
+
+  async function gpioActionDelete(idx) {
+    const a = _gpioActions.find(x => x.idx === idx);
+    if (!confirm('Delete GPIO action "' + (a ? a.name : idx) + '"?')) return;
+    try {
+      const d = await api('/api/gpio/action', 'DELETE', { idx });
+      if (d.ok) loadGpioActions();
+      else toast('toast-gpio-action', false, d.error || 'Failed');
+    } catch(e) {}
+  }
+
   // ── System ────────────────────────────────────────────────────────────────
 
   async function systemReboot() {
@@ -575,27 +763,27 @@
   const BLE_EVENTS = ['single_press','double_press','triple_press','long_press'];
   const BLE_LABELS = ['Single press','Double press','Triple press','Long press'];
 
-  function eventBlockHtml(evKey, evLabel, mask) {
-    if (!_mqttActions.length) {
+  function eventBlockHtml(evKey, evLabel, mask, actions, prefix, emptyText) {
+    if (!actions.length) {
       return `<div class="event-block">
         <div class="event-label">${evLabel}</div>
-        <small style="color:#888">No actions defined — add actions in the MQTT tab first</small>
+        <small style="color:#888">${emptyText}</small>
       </div>`;
     }
-    const checks = _mqttActions.map(a => {
+    const checks = actions.map(a => {
       const checked = (mask & (1 << a.idx)) ? 'checked' : '';
       return `<div class="check-row" style="margin-bottom:.3rem">
-        <input type="checkbox" id="ev-${evKey}-${a.idx}" ${checked}>
-        <label for="ev-${evKey}-${a.idx}" style="font-size:.85rem">${escHtml(a.name)}</label>
+        <input type="checkbox" id="${prefix}-${evKey}-${a.idx}" ${checked}>
+        <label for="${prefix}-${evKey}-${a.idx}" style="font-size:.85rem">${escHtml(a.name)}</label>
       </div>`;
     }).join('');
     return `<div class="event-block"><div class="event-label">${evLabel}</div>${checks}</div>`;
   }
 
-  function getEventMask(evKey) {
+  function getEventMask(evKey, actions, prefix) {
     let mask = 0;
-    _mqttActions.forEach(a => {
-      const el = document.getElementById('ev-' + evKey + '-' + a.idx);
+    actions.forEach(a => {
+      const el = document.getElementById(prefix + '-' + evKey + '-' + a.idx);
       if (el && el.checked) mask |= (1 << a.idx);
     });
     return mask;
@@ -635,11 +823,14 @@
   async function bleEdit(d) {
     _bleEditMac = d.mac;
     await loadMqttActions();
+    await loadGpioActions();
     document.getElementById('ble-edit-mac-label').textContent = 'MAC: ' + d.mac;
     document.getElementById('ble-edit-label').value   = d.label;
     document.getElementById('ble-edit-enabled').checked = d.enabled;
-    document.getElementById('ble-edit-events').innerHTML =
-      BLE_EVENTS.map((ev, i) => eventBlockHtml(ev, BLE_LABELS[i], d[ev] || 0)).join('');
+    document.getElementById('ble-edit-mqtt-events').innerHTML =
+      BLE_EVENTS.map((ev, i) => eventBlockHtml(ev, BLE_LABELS[i], d[ev] || 0, _mqttActions, 'mqtt-ev', 'No MQTT actions defined — add them in the MQTT tab first')).join('');
+    document.getElementById('ble-edit-gpio-events').innerHTML =
+      BLE_EVENTS.map((ev, i) => eventBlockHtml(ev, BLE_LABELS[i], d['gpio_' + ev] || 0, _gpioActions, 'gpio-ev', 'No GPIO actions defined — add them in the GPIO tab first')).join('');
     document.getElementById('ble-edit-key').value = '';
     document.getElementById('ble-edit-import-warn').style.display = d.key_import_error ? 'block' : 'none';
     document.getElementById('ble-edit-decrypt-warn').style.display = d.decrypt_error ? 'block' : 'none';
@@ -661,10 +852,14 @@
       mac:          _bleEditMac,
       label:        document.getElementById('ble-edit-label').value.trim(),
       enabled:      document.getElementById('ble-edit-enabled').checked,
-      single_press: getEventMask('single_press'),
-      double_press: getEventMask('double_press'),
-      triple_press: getEventMask('triple_press'),
-      long_press:   getEventMask('long_press'),
+      single_press: getEventMask('single_press', _mqttActions, 'mqtt-ev'),
+      double_press: getEventMask('double_press', _mqttActions, 'mqtt-ev'),
+      triple_press: getEventMask('triple_press', _mqttActions, 'mqtt-ev'),
+      long_press:   getEventMask('long_press', _mqttActions, 'mqtt-ev'),
+      gpio_single_press: getEventMask('single_press', _gpioActions, 'gpio-ev'),
+      gpio_double_press: getEventMask('double_press', _gpioActions, 'gpio-ev'),
+      gpio_triple_press: getEventMask('triple_press', _gpioActions, 'gpio-ev'),
+      gpio_long_press:   getEventMask('long_press', _gpioActions, 'gpio-ev'),
     };
     const key = document.getElementById('ble-edit-key').value.trim();
     if (key && !/^[0-9a-fA-F]{32}$/.test(key)) {
@@ -768,6 +963,8 @@
   loadWifiConfig();
   loadMqttConfig();
   loadMqttActions();
+  loadGpioPins();
+  loadGpioActions();
   loadApConfig();
   loadBleDevices();
   setInterval(refreshStatus, 5000);
