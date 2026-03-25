@@ -2,7 +2,9 @@
 #include <stdlib.h>
 #include "cJSON.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_system.h"
+#include "esp_ota_ops.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_http_server.h"
@@ -920,13 +922,359 @@ static esp_err_t handle_ble_device_delete(httpd_req_t *req)
     return ESP_OK;
 }
 
+// ── OTA update ────────────────────────────────────────────────────────────────
+
+// POST /api/system/ota  (raw binary body)
+static esp_err_t handle_ota_upload(httpd_req_t *req)
+{
+    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
+    if (!part) return send_error(req, "no OTA partition");
+
+    esp_ota_handle_t ota;
+    esp_err_t err = esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota);
+    if (err != ESP_OK) return send_error(req, "OTA begin failed");
+
+    char buf[1024];
+    int remaining = req->content_len;
+    while (remaining > 0) {
+        int n = httpd_req_recv(req, buf, remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf));
+        if (n <= 0) { esp_ota_abort(ota); return send_error(req, "receive error"); }
+        err = esp_ota_write(ota, buf, n);
+        if (err != ESP_OK) { esp_ota_abort(ota); return send_error(req, "OTA write failed"); }
+        remaining -= n;
+    }
+
+    err = esp_ota_end(ota);
+    if (err != ESP_OK) return send_error(req, "OTA validation failed");
+
+    err = esp_ota_set_boot_partition(part);
+    if (err != ESP_OK) return send_error(req, "set boot partition failed");
+
+    send_json(req, "{\"ok\":true}");
+    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+// ── Config backup / restore ──────────────────────────────────────────────────
+
+static uint16_t json_u16(cJSON *obj, const char *key)
+{
+    cJSON *v = cJSON_GetObjectItem(obj, key);
+    return cJSON_IsNumber(v) ? (uint16_t)v->valuedouble : 0;
+}
+
+// GET /api/system/config
+static esp_err_t handle_config_download(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "version", 1);
+
+    // WiFi STA
+    cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
+    {
+        char ssid[33] = {0}, pass[65] = {0};
+        nvs_handle_t h;
+        if (nvs_open("wifi", NVS_READONLY, &h) == ESP_OK) {
+            size_t len = sizeof(ssid);
+            nvs_get_str(h, "ssid", ssid, &len);
+            len = sizeof(pass);
+            nvs_get_str(h, "pass", pass, &len);
+            nvs_close(h);
+        }
+        cJSON_AddStringToObject(wifi, "ssid", ssid);
+        cJSON_AddStringToObject(wifi, "password", pass);
+    }
+
+    // AP
+    cJSON *ap = cJSON_AddObjectToObject(root, "ap");
+    {
+        wifi_ap_settings_t cfg;
+        wifi_ap_load_config(&cfg);
+        cJSON_AddBoolToObject(ap, "enabled", cfg.enabled);
+        cJSON_AddStringToObject(ap, "ssid", cfg.ssid);
+        cJSON_AddStringToObject(ap, "password", cfg.password);
+    }
+
+    // MQTT broker
+    cJSON *mqtt = cJSON_AddObjectToObject(root, "mqtt");
+    {
+        char host[128] = {0}, user[64] = {0}, pass[64] = {0};
+        char port_s[8] = {0}, tls_s[4] = {0};
+        nvs_handle_t h;
+        if (nvs_open("mqtt", NVS_READONLY, &h) == ESP_OK) {
+            size_t len;
+            len = sizeof(host);  nvs_get_str(h, "host", host, &len);
+            len = sizeof(port_s); nvs_get_str(h, "port", port_s, &len);
+            len = sizeof(user);  nvs_get_str(h, "user", user, &len);
+            len = sizeof(pass);  nvs_get_str(h, "pass", pass, &len);
+            len = sizeof(tls_s); nvs_get_str(h, "tls", tls_s, &len);
+            nvs_close(h);
+        }
+        cJSON_AddStringToObject(mqtt, "host", host);
+        cJSON_AddNumberToObject(mqtt, "port", atoi(port_s));
+        cJSON_AddStringToObject(mqtt, "username", user);
+        cJSON_AddStringToObject(mqtt, "password", pass);
+        cJSON_AddBoolToObject(mqtt, "tls", strcmp(tls_s, "1") == 0);
+    }
+
+    // MQTT actions
+    cJSON *ma = cJSON_AddArrayToObject(root, "mqtt_actions");
+    for (int i = 0; i < MQTT_MAX_ACTIONS; i++) {
+        mqtt_action_t a;
+        if (mqtt_action_get(i, &a) == ESP_OK) {
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddNumberToObject(o, "idx", i);
+            cJSON_AddStringToObject(o, "name", a.name);
+            cJSON_AddStringToObject(o, "topic", a.topic);
+            cJSON_AddStringToObject(o, "payload", a.payload);
+            cJSON_AddItemToArray(ma, o);
+        }
+    }
+
+    // GPIO actions
+    cJSON *ga = cJSON_AddArrayToObject(root, "gpio_actions");
+    for (int i = 0; i < GPIO_ACTION_MAX; i++) {
+        gpio_action_t a;
+        if (gpio_action_get(i, &a) == ESP_OK) {
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddNumberToObject(o, "idx", i);
+            cJSON_AddStringToObject(o, "name", a.name);
+            cJSON_AddNumberToObject(o, "gpio", a.gpio_num);
+            cJSON_AddBoolToObject(o, "idle_on", a.idle_on);
+            cJSON_AddBoolToObject(o, "active_low", a.active_low);
+            cJSON_AddStringToObject(o, "action", gpio_action_kind_str((gpio_action_kind_t)a.action));
+            cJSON_AddNumberToObject(o, "restore_delay_ms", a.restore_delay_ms);
+            cJSON_AddItemToArray(ga, o);
+        }
+    }
+
+    // BLE devices
+    cJSON *ba = cJSON_AddArrayToObject(root, "ble_devices");
+    {
+        ble_device_t devs[BLE_ACCESS_MAX_DEVICES];
+        int n = ble_access_get_devices(devs, BLE_ACCESS_MAX_DEVICES);
+        for (int i = 0; i < n; i++) {
+            cJSON *o = cJSON_CreateObject();
+            char ms[18];
+            mac_to_str(devs[i].mac, ms);
+            cJSON_AddStringToObject(o, "mac", ms);
+            char kh[33];
+            for (int k = 0; k < 16; k++) snprintf(kh + k * 2, 3, "%02X", devs[i].key[k]);
+            cJSON_AddStringToObject(o, "key", kh);
+            cJSON_AddStringToObject(o, "label", devs[i].label);
+            cJSON_AddBoolToObject(o, "enabled", devs[i].enabled);
+            cJSON_AddNumberToObject(o, "last_counter", devs[i].last_counter);
+            cJSON_AddNumberToObject(o, "single_press", devs[i].single_press);
+            cJSON_AddNumberToObject(o, "double_press", devs[i].double_press);
+            cJSON_AddNumberToObject(o, "triple_press", devs[i].triple_press);
+            cJSON_AddNumberToObject(o, "long_press", devs[i].long_press);
+            cJSON_AddNumberToObject(o, "gpio_single_press", devs[i].gpio_single_press);
+            cJSON_AddNumberToObject(o, "gpio_double_press", devs[i].gpio_double_press);
+            cJSON_AddNumberToObject(o, "gpio_triple_press", devs[i].gpio_triple_press);
+            cJSON_AddNumberToObject(o, "gpio_long_press", devs[i].gpio_long_press);
+            cJSON_AddItemToArray(ba, o);
+        }
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=\"bbb-config.json\"");
+    char *str = cJSON_Print(root);
+    cJSON_Delete(root);
+    if (!str) return send_error(req, "json error");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    return ESP_OK;
+}
+
+// POST /api/system/config  (JSON body)
+static esp_err_t handle_config_restore(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 8192)
+        return send_error(req, "body too large (max 8 KB)");
+
+    char *body = malloc(req->content_len + 1);
+    if (!body) return send_error(req, "out of memory");
+
+    int received = 0;
+    while (received < req->content_len) {
+        int n = httpd_req_recv(req, body + received, req->content_len - received);
+        if (n <= 0) { free(body); return send_error(req, "receive error"); }
+        received += n;
+    }
+    body[received] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) return send_error(req, "invalid json");
+
+    // WiFi STA
+    cJSON *wifi = cJSON_GetObjectItem(root, "wifi");
+    if (wifi) {
+        nvs_handle_t h;
+        if (nvs_open("wifi", NVS_READWRITE, &h) == ESP_OK) {
+            cJSON *s = cJSON_GetObjectItem(wifi, "ssid");
+            cJSON *p = cJSON_GetObjectItem(wifi, "password");
+            if (cJSON_IsString(s) && strlen(s->valuestring)) nvs_set_str(h, "ssid", s->valuestring);
+            if (cJSON_IsString(p) && strlen(p->valuestring)) nvs_set_str(h, "pass", p->valuestring);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+    }
+
+    // AP
+    cJSON *ap = cJSON_GetObjectItem(root, "ap");
+    if (ap) {
+        wifi_ap_settings_t cfg;
+        wifi_ap_load_config(&cfg);
+        cJSON *en = cJSON_GetObjectItem(ap, "enabled");
+        cJSON *s  = cJSON_GetObjectItem(ap, "ssid");
+        cJSON *p  = cJSON_GetObjectItem(ap, "password");
+        if (cJSON_IsBool(en))  cfg.enabled = cJSON_IsTrue(en);
+        if (cJSON_IsString(s)) strlcpy(cfg.ssid, s->valuestring, sizeof(cfg.ssid));
+        if (cJSON_IsString(p)) strlcpy(cfg.password, p->valuestring, sizeof(cfg.password));
+        wifi_ap_save_config(&cfg);
+    }
+
+    // MQTT broker
+    cJSON *mqtt = cJSON_GetObjectItem(root, "mqtt");
+    if (mqtt) {
+        nvs_handle_t h;
+        if (nvs_open("mqtt", NVS_READWRITE, &h) == ESP_OK) {
+            cJSON *host = cJSON_GetObjectItem(mqtt, "host");
+            cJSON *port = cJSON_GetObjectItem(mqtt, "port");
+            cJSON *user = cJSON_GetObjectItem(mqtt, "username");
+            cJSON *pass = cJSON_GetObjectItem(mqtt, "password");
+            cJSON *tls  = cJSON_GetObjectItem(mqtt, "tls");
+            if (cJSON_IsString(host)) nvs_set_str(h, "host", host->valuestring);
+            if (cJSON_IsNumber(port)) {
+                char ps[8]; snprintf(ps, sizeof(ps), "%d", (int)port->valuedouble);
+                nvs_set_str(h, "port", ps);
+            }
+            if (cJSON_IsString(user)) nvs_set_str(h, "user", user->valuestring);
+            if (cJSON_IsString(pass)) nvs_set_str(h, "pass", pass->valuestring);
+            if (cJSON_IsBool(tls))    nvs_set_str(h, "tls", cJSON_IsTrue(tls) ? "1" : "0");
+            nvs_commit(h);
+            nvs_close(h);
+        }
+    }
+
+    // MQTT actions
+    cJSON *ma = cJSON_GetObjectItem(root, "mqtt_actions");
+    if (ma && cJSON_IsArray(ma)) {
+        mqtt_action_t actions[MQTT_MAX_ACTIONS];
+        memset(actions, 0, sizeof(actions));
+        cJSON *item;
+        cJSON_ArrayForEach(item, ma) {
+            int idx = cJSON_IsNumber(cJSON_GetObjectItem(item, "idx"))
+                      ? (int)cJSON_GetObjectItem(item, "idx")->valuedouble : -1;
+            if (idx < 0 || idx >= MQTT_MAX_ACTIONS) continue;
+            cJSON *n = cJSON_GetObjectItem(item, "name");
+            cJSON *t = cJSON_GetObjectItem(item, "topic");
+            cJSON *p = cJSON_GetObjectItem(item, "payload");
+            if (cJSON_IsString(n)) strlcpy(actions[idx].name, n->valuestring, sizeof(actions[idx].name));
+            if (cJSON_IsString(t)) strlcpy(actions[idx].topic, t->valuestring, sizeof(actions[idx].topic));
+            if (cJSON_IsString(p)) strlcpy(actions[idx].payload, p->valuestring, sizeof(actions[idx].payload));
+        }
+        nvs_handle_t h;
+        if (nvs_open("mqtt", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_blob(h, "actions", actions, sizeof(actions));
+            nvs_commit(h); nvs_close(h);
+        }
+    }
+
+    // GPIO actions
+    cJSON *ga = cJSON_GetObjectItem(root, "gpio_actions");
+    if (ga && cJSON_IsArray(ga)) {
+        gpio_action_t actions[GPIO_ACTION_MAX];
+        memset(actions, 0, sizeof(actions));
+        cJSON *item;
+        cJSON_ArrayForEach(item, ga) {
+            int idx = cJSON_IsNumber(cJSON_GetObjectItem(item, "idx"))
+                      ? (int)cJSON_GetObjectItem(item, "idx")->valuedouble : -1;
+            if (idx < 0 || idx >= GPIO_ACTION_MAX) continue;
+            cJSON *n = cJSON_GetObjectItem(item, "name");
+            if (!cJSON_IsString(n)) continue;
+            strlcpy(actions[idx].name, n->valuestring, sizeof(actions[idx].name));
+            cJSON *g  = cJSON_GetObjectItem(item, "gpio");
+            cJSON *il = cJSON_GetObjectItem(item, "idle_on");
+            cJSON *al = cJSON_GetObjectItem(item, "active_low");
+            cJSON *ak = cJSON_GetObjectItem(item, "action");
+            cJSON *rd = cJSON_GetObjectItem(item, "restore_delay_ms");
+            if (cJSON_IsNumber(g))  actions[idx].gpio_num = (uint8_t)g->valuedouble;
+            if (cJSON_IsBool(il))   actions[idx].idle_on = cJSON_IsTrue(il);
+            if (cJSON_IsBool(al))   actions[idx].active_low = cJSON_IsTrue(al);
+            if (cJSON_IsString(ak)) {
+                gpio_action_kind_t kind;
+                if (gpio_action_kind_parse(ak->valuestring, &kind))
+                    actions[idx].action = (uint8_t)kind;
+            }
+            if (cJSON_IsNumber(rd)) actions[idx].restore_delay_ms = (uint32_t)rd->valuedouble;
+        }
+        nvs_handle_t h;
+        if (nvs_open("gpio", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_blob(h, "actions", actions, sizeof(actions));
+            nvs_commit(h); nvs_close(h);
+        }
+    }
+
+    // BLE devices
+    cJSON *ba = cJSON_GetObjectItem(root, "ble_devices");
+    if (ba && cJSON_IsArray(ba)) {
+        ble_device_t devs[BLE_ACCESS_MAX_DEVICES];
+        memset(devs, 0, sizeof(devs));
+        int count = 0;
+        cJSON *item;
+        cJSON_ArrayForEach(item, ba) {
+            if (count >= BLE_ACCESS_MAX_DEVICES) break;
+            cJSON *mj = cJSON_GetObjectItem(item, "mac");
+            cJSON *kj = cJSON_GetObjectItem(item, "key");
+            if (!cJSON_IsString(mj) || !cJSON_IsString(kj)) continue;
+            ble_device_t *d = &devs[count];
+            if (!mac_from_str(mj->valuestring, d->mac)) continue;
+            if (!key_from_str(kj->valuestring, d->key)) continue;
+            cJSON *lj = cJSON_GetObjectItem(item, "label");
+            strlcpy(d->label, cJSON_IsString(lj) ? lj->valuestring : "Device", sizeof(d->label));
+            cJSON *ej = cJSON_GetObjectItem(item, "enabled");
+            d->enabled = cJSON_IsBool(ej) ? cJSON_IsTrue(ej) : true;
+            cJSON *cj = cJSON_GetObjectItem(item, "last_counter");
+            if (cJSON_IsNumber(cj)) d->last_counter = (uint32_t)cj->valuedouble;
+            d->single_press       = json_u16(item, "single_press");
+            d->double_press       = json_u16(item, "double_press");
+            d->triple_press       = json_u16(item, "triple_press");
+            d->long_press         = json_u16(item, "long_press");
+            d->gpio_single_press  = json_u16(item, "gpio_single_press");
+            d->gpio_double_press  = json_u16(item, "gpio_double_press");
+            d->gpio_triple_press  = json_u16(item, "gpio_triple_press");
+            d->gpio_long_press    = json_u16(item, "gpio_long_press");
+            count++;
+        }
+        nvs_handle_t h;
+        if (nvs_open("ble_access", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_erase_all(h);
+            nvs_set_u8(h, "count", (uint8_t)count);
+            for (int i = 0; i < count; i++) {
+                char key[16];
+                snprintf(key, sizeof(key), "dev_%d", i);
+                nvs_set_blob(h, key, &devs[i], sizeof(ble_device_t));
+            }
+            nvs_commit(h); nvs_close(h);
+        }
+    }
+
+    cJSON_Delete(root);
+    send_json(req, "{\"ok\":true}");
+    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 
 void web_manager_init(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size        = 10240;
-    config.max_uri_handlers  = 36;
+    config.max_uri_handlers  = 40;
     config.max_open_sockets  = 4;
     config.lru_purge_enable  = true;
     config.uri_match_fn      = httpd_uri_match_wildcard;
@@ -962,8 +1310,11 @@ void web_manager_init(void)
         { .uri = "/api/ap/stop",              .method = HTTP_POST,   .handler = handle_ap_stop             },
         { .uri = "/api/ap/config",            .method = HTTP_GET,    .handler = handle_ap_config_get       },
         { .uri = "/api/ap/config",            .method = HTTP_POST,   .handler = handle_ap_config_set       },
-        { .uri = "/api/system/reboot",        .method = HTTP_POST,   .handler = handle_system_reboot       },
-        { .uri = "/api/system/factory-reset",  .method = HTTP_POST,   .handler = handle_system_factory_reset  },
+        { .uri = "/api/system/reboot",        .method = HTTP_POST,   .handler = handle_system_reboot         },
+        { .uri = "/api/system/factory-reset", .method = HTTP_POST,   .handler = handle_system_factory_reset  },
+        { .uri = "/api/system/ota",           .method = HTTP_POST,   .handler = handle_ota_upload             },
+        { .uri = "/api/system/config",        .method = HTTP_GET,    .handler = handle_config_download        },
+        { .uri = "/api/system/config",        .method = HTTP_POST,   .handler = handle_config_restore         },
         { .uri = "/api/ble/devices",           .method = HTTP_GET,    .handler = handle_ble_devices           },
         { .uri = "/api/ble/register/status",   .method = HTTP_GET,    .handler = handle_ble_reg_status        },
         { .uri = "/api/ble/register/start",    .method = HTTP_POST,   .handler = handle_ble_reg_start         },

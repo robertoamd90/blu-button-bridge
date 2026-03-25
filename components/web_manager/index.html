@@ -287,11 +287,29 @@
 <!-- System -->
 <div id="tab-system" class="tab">
   <div class="card">
-    <h2>Device</h2>
-    <p style="font-size:.82rem;color:#555;margin-bottom:1rem">
-      Reboot the device or restore factory defaults.
-      All settings are stored in NVS (non-volatile storage).
+    <h2>Firmware Update (OTA)</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+      Upload a new firmware binary (.bin). The device will reboot after a successful update.
     </p>
+    <input id="ota-file" type="file" accept=".bin" style="margin-bottom:.75rem">
+    <button class="btn btn-primary" onclick="otaUpload()">Upload &amp; Update</button>
+    <div id="toast-ota" class="toast"></div>
+  </div>
+  <div class="card">
+    <h2>Configuration Backup</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+      Download or restore the full device configuration (WiFi, MQTT, GPIO, BLE, AP settings).
+    </p>
+    <div class="row" style="margin-bottom:.75rem">
+      <button class="btn btn-primary" onclick="configDownload()">Download Config</button>
+    </div>
+    <label>Restore from file</label>
+    <input id="config-file" type="file" accept=".json" style="margin-bottom:.75rem">
+    <button class="btn btn-secondary" onclick="configRestore()">Restore Config</button>
+    <div id="toast-config" class="toast"></div>
+  </div>
+  <div class="card">
+    <h2>Device</h2>
     <div class="row">
       <button class="btn btn-secondary" onclick="systemReboot()">Reboot</button>
       <button class="btn btn-danger"    onclick="systemFactoryReset()">Factory Reset</button>
@@ -766,6 +784,50 @@
       await api('/api/system/factory-reset', 'POST', {});
       toast('toast-system', true, 'Resetting… device will reboot');
     } catch(e) { toast('toast-system', true, 'Resetting… device will reboot'); }
+  }
+
+  // ── OTA ───────────────────────────────────────────────────────────────────
+
+  async function otaUpload() {
+    const file = document.getElementById('ota-file').files[0];
+    if (!file) { toast('toast-ota', false, 'Select a .bin file first'); return; }
+    if (!confirm('Upload firmware and reboot?')) return;
+    toast('toast-ota', true, 'Uploading… do not disconnect');
+    try {
+      const res = await fetch('/api/system/ota', { method: 'POST', body: file });
+      const d = await res.json();
+      if (d.ok) toast('toast-ota', true, 'OTA complete, rebooting…');
+      else toast('toast-ota', false, d.error || 'OTA failed');
+    } catch(e) { toast('toast-ota', true, 'Rebooting…'); }
+  }
+
+  // ── Config backup / restore ──────────────────────────────────────────────
+
+  async function configDownload() {
+    try {
+      const res = await fetch('/api/system/config');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'bbb-config.json'; a.click();
+      URL.revokeObjectURL(url);
+    } catch(e) { toast('toast-config', false, 'Download failed'); }
+  }
+
+  async function configRestore() {
+    const file = document.getElementById('config-file').files[0];
+    if (!file) { toast('toast-config', false, 'Select a .json file first'); return; }
+    if (!confirm('This will overwrite ALL settings and reboot. Continue?')) return;
+    try {
+      const text = await file.text();
+      const res = await fetch('/api/system/config', {
+        method: 'POST', body: text,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const d = await res.json();
+      if (d.ok) toast('toast-config', true, 'Config restored, rebooting…');
+      else toast('toast-config', false, d.error || 'Restore failed');
+    } catch(e) { toast('toast-config', true, 'Rebooting…'); }
   }
 
   // ── BLE ───────────────────────────────────────────────────────────────────
