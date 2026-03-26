@@ -50,12 +50,19 @@
     .scan-rssi.good { color: #22c55e; }
     .scan-rssi.ok   { color: #f59e0b; }
     .scan-rssi.weak { color: #ef4444; }
-    .action-row { display: flex; align-items: center; justify-content: space-between; padding: .4rem 0; border-bottom: 1px solid #f0f0f0; font-size: .88rem; }
+    .action-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .5rem .75rem; padding: .4rem 0; border-bottom: 1px solid #f0f0f0; font-size: .88rem; }
     .action-row:last-child { border-bottom: none; }
-    .action-name { font-weight: 500; flex: 1; }
-    .action-sub { font-size: .75rem; color: #888; font-family: monospace; }
+    .action-main { min-width: 0; }
+    .action-name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+    .action-sub { font-size: .75rem; color: #888; font-family: monospace; overflow-wrap: anywhere; }
+    .action-buttons { display: grid; grid-auto-flow: column; grid-auto-columns: max-content; gap: .3rem; align-items: center; justify-content: end; }
     .event-block { margin-bottom: .6rem; padding: .5rem .7rem; border: 1px solid #e8e8e8; border-radius: 6px; }
     .event-label { font-size: .78rem; font-weight: 700; text-transform: uppercase; color: #888; margin-bottom: .4rem; }
+    @media (max-width: 560px) {
+      .action-row { grid-template-columns: 1fr; }
+      .action-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-flow: row; width: 100%; }
+      .action-buttons .btn { width: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -542,11 +549,11 @@
     }
     el.innerHTML = _mqttActions.map(a => `
       <div class="action-row">
-        <div>
+        <div class="action-main">
           <div class="action-name">${escHtml(a.name)}</div>
           <div class="action-sub">${escHtml(a.topic)} &rarr; ${escHtml(a.payload)}</div>
         </div>
-        <div class="row" style="margin:0;gap:.3rem">
+        <div class="action-buttons">
           <button class="btn btn-primary" style="padding:.25rem .6rem;font-size:.8rem"
             onclick="mqttActionTest(${a.idx})">Test</button>
           <button class="btn btn-secondary" style="padding:.25rem .6rem;font-size:.8rem"
@@ -656,11 +663,11 @@
     }
     el.innerHTML = _gpioActions.map(a => `
       <div class="action-row">
-        <div>
+        <div class="action-main">
           <div class="action-name">${escHtml(a.name)}</div>
           <div class="action-sub">${escHtml(gpioSubtitle(a))}</div>
         </div>
-        <div class="row" style="margin:0;gap:.3rem">
+        <div class="action-buttons">
           <button class="btn btn-primary" style="padding:.25rem .6rem;font-size:.8rem"
             onclick="gpioActionTest(${a.idx})">Test</button>
           <button class="btn btn-secondary" style="padding:.25rem .6rem;font-size:.8rem"
