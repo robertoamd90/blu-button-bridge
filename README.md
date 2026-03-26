@@ -147,6 +147,8 @@ Encryption **must** be enabled on the Shelly BLU Button before it can work with 
 
 Without encryption enabled, the button sends unencrypted BTHome advertisements which this firmware does not support.
 
+> **Battery replacement note:** after removing and reinserting the battery, the Shelly BLU Button stops sending encrypted advertisements until you reconnect it with the Shelly BLE app at least once. This is a device-level behaviour and cannot be resolved from the ESP32 side.
+
 ### Device registration
 
 1. Web UI → **BLE** tab → **Start registration**
