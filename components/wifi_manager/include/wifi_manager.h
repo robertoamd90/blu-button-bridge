@@ -31,8 +31,9 @@ void wifi_disconnect(void);
 void wifi_clean_credentials(void);
 
 // Saves credentials to NVS and connects (for programmatic use, e.g. web API).
-// If pass is empty, preserves the password already stored in NVS.
-void wifi_connect_api(const char *ssid, const char *pass);
+// If password_provided is false, preserves the password already stored in NVS when possible.
+// If password_provided is true, pass may be empty to configure an open network.
+void wifi_connect_api(const char *ssid, const char *pass, bool password_provided);
 
 // Result entry for a WiFi scan.
 typedef struct {

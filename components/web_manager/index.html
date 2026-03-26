@@ -92,9 +92,9 @@
     <h2>Network</h2>
     <div id="wifi-current" class="current-val" style="display:none"></div>
     <label>SSID</label>
-    <input id="wifi-ssid" type="text" placeholder="Network name">
-    <label>Password</label>
-    <input id="wifi-pass" type="password" placeholder="Password">
+    <input id="wifi-ssid" type="text" placeholder="Network name" oninput="wifiSsidChanged()">
+    <label>Password <small>(clear for open network when using a different SSID)</small></label>
+    <input id="wifi-pass" type="password" placeholder="Password (empty = open network)" onfocus="wifiPassFocus()" oninput="wifiPassInput()">
     <div class="row" style="margin-bottom:.75rem">
       <button class="btn btn-primary" onclick="wifiConnect()">Connect</button>
       <button class="btn btn-secondary" onclick="wifiScan()">Scan</button>
@@ -144,8 +144,8 @@
     <input id="mqtt-port" type="text" value="1883">
     <label>Username</label>
     <input id="mqtt-user" type="text" placeholder="optional">
-    <label>Password</label>
-    <input id="mqtt-pass" type="password" placeholder="optional">
+    <label>Password <small>(clear to use an anonymous broker)</small></label>
+    <input id="mqtt-pass" type="password" placeholder="optional" onfocus="mqttPassFocus()" oninput="mqttPassInput()">
     <div class="check-row">
       <input type="checkbox" id="mqtt-tls">
       <label for="mqtt-tls">Use TLS</label>
@@ -356,6 +356,81 @@
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  const MASKED_SECRET = '********';
+  let _wifiSavedSsid = '';
+  let _wifiPasswordSet = false;
+  let _wifiPassDirty = false;
+  let _wifiPassForcedClear = false;
+  let _mqttPasswordSet = false;
+  let _mqttPassDirty = false;
+
+  function resetWifiPasswordField(hasPassword) {
+    const el = document.getElementById('wifi-pass');
+    _wifiPasswordSet = !!hasPassword;
+    _wifiPassDirty = false;
+    _wifiPassForcedClear = false;
+    if (_wifiPasswordSet) {
+      el.value = MASKED_SECRET;
+      el.placeholder = '';
+    } else {
+      el.value = '';
+      el.placeholder = 'Password (empty = open network)';
+    }
+  }
+
+  function resetMqttPasswordField(hasPassword) {
+    const el = document.getElementById('mqtt-pass');
+    _mqttPasswordSet = !!hasPassword;
+    _mqttPassDirty = false;
+    if (_mqttPasswordSet) {
+      el.value = MASKED_SECRET;
+      el.placeholder = '';
+    } else {
+      el.value = '';
+      el.placeholder = 'optional';
+    }
+  }
+
+  function wifiPassFocus() {
+    const el = document.getElementById('wifi-pass');
+    if (_wifiPasswordSet && !_wifiPassDirty && !_wifiPassForcedClear && el.value === MASKED_SECRET) {
+      el.select();
+    }
+  }
+
+  function mqttPassFocus() {
+    const el = document.getElementById('mqtt-pass');
+    if (_mqttPasswordSet && !_mqttPassDirty && el.value === MASKED_SECRET) {
+      el.select();
+    }
+  }
+
+  function wifiPassInput() {
+    _wifiPassDirty = true;
+    _wifiPassForcedClear = false;
+  }
+
+  function mqttPassInput() {
+    _mqttPassDirty = true;
+  }
+
+  function wifiSsidChanged() {
+    const ssid = document.getElementById('wifi-ssid').value.trim();
+    const passEl = document.getElementById('wifi-pass');
+
+    if (!_wifiPasswordSet || _wifiPassDirty) return;
+
+    if (_wifiSavedSsid && ssid === _wifiSavedSsid) {
+      _wifiPassForcedClear = false;
+      passEl.value = MASKED_SECRET;
+      passEl.placeholder = '';
+    } else {
+      _wifiPassForcedClear = true;
+      passEl.value = '';
+      passEl.placeholder = 'Password (empty = open network)';
+    }
+  }
+
   async function refreshStatus() {
     try {
       const d = await (await fetch('/api/status')).json();
@@ -376,25 +451,31 @@
   async function loadWifiConfig() {
     try {
       const d = await (await fetch('/api/wifi/config')).json();
+      _wifiSavedSsid = d.ssid_set ? (d.ssid || '') : '';
       const cur = document.getElementById('wifi-current');
       if (d.ssid_set) {
         cur.textContent = 'Current SSID: ' + d.ssid;
         cur.style.display = 'block';
         document.getElementById('wifi-ssid').value = d.ssid;
+      } else {
+        cur.style.display = 'none';
+        document.getElementById('wifi-ssid').value = '';
       }
-      document.getElementById('wifi-pass').placeholder =
-        d.password_set ? '(unchanged)' : 'Password';
+      resetWifiPasswordField(d.password_set);
+      wifiSsidChanged();
     } catch(e) {}
   }
 
   async function wifiConnect() {
     const ssid = document.getElementById('wifi-ssid').value.trim();
     if (!ssid) return toast('toast-wifi', false, 'SSID is required');
+    const body = { ssid };
+    if (!_wifiPasswordSet || _wifiPassDirty || _wifiPassForcedClear) {
+      body.password = document.getElementById('wifi-pass').value;
+    }
     toast('toast-wifi', true, 'Connecting… (status bar will update)');
     try {
-      await api('/api/wifi/connect', 'POST', {
-        ssid, password: document.getElementById('wifi-pass').value
-      });
+      await api('/api/wifi/connect', 'POST', body);
     } catch(e) {
       toast('toast-wifi', true, 'Reconnecting… check status bar');
     }
@@ -407,7 +488,8 @@
       toast('toast-wifi', d.ok, 'Cleared');
       document.getElementById('wifi-current').style.display = 'none';
       document.getElementById('wifi-ssid').value = '';
-      document.getElementById('wifi-pass').placeholder = 'Password';
+      _wifiSavedSsid = '';
+      resetWifiPasswordField(false);
       refreshStatus();
     } catch(e) { toast('toast-wifi', false, 'Request failed'); }
   }
@@ -420,6 +502,7 @@
 
   function selectSsid(ssid) {
     document.getElementById('wifi-ssid').value = ssid;
+    wifiSsidChanged();
     document.getElementById('wifi-pass').focus();
   }
 
@@ -495,28 +578,37 @@
   async function loadMqttConfig() {
     try {
       const d = await (await fetch('/api/mqtt/config')).json();
-      if (!d.configured) return;
+      if (!d.configured) {
+        document.getElementById('mqtt-host').value = '';
+        document.getElementById('mqtt-port').value = 1883;
+        document.getElementById('mqtt-user').value = '';
+        document.getElementById('mqtt-tls').checked = false;
+        resetMqttPasswordField(false);
+        return;
+      }
       document.getElementById('mqtt-host').value = d.host || '';
       document.getElementById('mqtt-port').value = d.port || 1883;
       document.getElementById('mqtt-user').value = d.username || '';
       document.getElementById('mqtt-tls').checked = !!d.tls;
-      document.getElementById('mqtt-pass').placeholder =
-        d.password_set ? '(unchanged)' : 'optional';
+      resetMqttPasswordField(d.password_set);
     } catch(e) {}
   }
 
   async function mqttConnect() {
     const host = document.getElementById('mqtt-host').value.trim();
     if (!host) return toast('toast-mqtt', false, 'Host is required');
+    const body = {
+      host,
+      port:     parseInt(document.getElementById('mqtt-port').value) || 1883,
+      username: document.getElementById('mqtt-user').value,
+      tls:      document.getElementById('mqtt-tls').checked
+    };
+    if (!_mqttPasswordSet || _mqttPassDirty) {
+      body.password = document.getElementById('mqtt-pass').value;
+    }
     toast('toast-mqtt', true, 'Connecting… (status bar will update)');
     try {
-      await api('/api/mqtt/connect', 'POST', {
-        host,
-        port:     parseInt(document.getElementById('mqtt-port').value) || 1883,
-        username: document.getElementById('mqtt-user').value,
-        password: document.getElementById('mqtt-pass').value,
-        tls:      document.getElementById('mqtt-tls').checked
-      });
+      await api('/api/mqtt/connect', 'POST', body);
     } catch(e) { toast('toast-mqtt', false, 'Request failed'); }
   }
 
@@ -525,6 +617,11 @@
     try {
       const d = await api('/api/mqtt', 'DELETE');
       toast('toast-mqtt', d.ok, 'Cleared');
+      document.getElementById('mqtt-host').value = '';
+      document.getElementById('mqtt-port').value = 1883;
+      document.getElementById('mqtt-user').value = '';
+      document.getElementById('mqtt-tls').checked = false;
+      resetMqttPasswordField(false);
       refreshStatus();
     } catch(e) { toast('toast-mqtt', false, 'Request failed'); }
   }

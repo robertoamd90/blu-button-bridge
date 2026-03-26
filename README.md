@@ -62,7 +62,7 @@ Each of the 4 button events (single, double, triple, long press) can independent
 | Pin | Usage |
 |-----|-------|
 | **0** | BOOT button — hold 3 s to start AP, hold 10 s to factory reset |
-| **2** | System LED (blue) — blinks during AP mode, visual feedback for BOOT button |
+| **2** | System LED (blue) — AP/BOOT feedback plus WiFi and MQTT warning patterns |
 | 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33 | Available for user GPIO actions |
 
 Boot-sensitive and flash pins are excluded from user configuration.
@@ -77,6 +77,19 @@ If the device can't connect to WiFi (e.g. changed password, network down), use t
 | **Factory reset** | 10 seconds | Fast blink |
 
 After releasing the button, the action triggers. The AP starts on `192.168.4.1` so you can reconfigure via the web UI from your phone.
+
+### System LED patterns
+
+The blue system LED also provides quick field diagnostics during normal operation:
+
+| LED pattern | Meaning |
+|-------------|---------|
+| **Off** | Normal state: WiFi is connected and no higher-priority warning is active |
+| **Slow continuous blink** | AP mode is active |
+| **2 blinks + pause** | WiFi is configured but currently disconnected |
+| **3 blinks + pause** | WiFi is up, MQTT is configured, but the broker is not connected |
+
+Priority is intentional: AP mode overrides warning patterns, and WiFi-down overrides MQTT-down.
 
 ---
 

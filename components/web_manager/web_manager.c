@@ -64,13 +64,13 @@ static esp_err_t send_error(httpd_req_t *req, const char *msg)
 
 // ── Async background tasks (WiFi/MQTT connect block up to 10s) ───────────────
 
-typedef struct { char ssid[33]; char pass[65]; } wifi_creds_t;
-typedef struct { char host[128]; uint32_t port; char user[64]; char pass[64]; bool tls; } mqtt_creds_t;
+typedef struct { char ssid[33]; char pass[65]; bool has_pass; } wifi_creds_t;
+typedef struct { char host[128]; uint32_t port; char user[64]; char pass[64]; bool tls; bool has_pass; } mqtt_creds_t;
 
 static void wifi_connect_task(void *arg)
 {
     wifi_creds_t *c = (wifi_creds_t *)arg;
-    wifi_connect_api(c->ssid, c->pass);
+    wifi_connect_api(c->ssid, c->pass, c->has_pass);
     free(c);
     vTaskDelete(NULL);
 }
@@ -78,7 +78,7 @@ static void wifi_connect_task(void *arg)
 static void mqtt_connect_task(void *arg)
 {
     mqtt_creds_t *c = (mqtt_creds_t *)arg;
-    mqtt_connect_api(c->host, c->port, c->user, c->pass, c->tls);
+    mqtt_connect_api(c->host, c->port, c->user, c->pass, c->tls, c->has_pass);
     free(c);
     vTaskDelete(NULL);
 }
@@ -201,6 +201,7 @@ static esp_err_t handle_wifi_connect(httpd_req_t *req)
     if (!c) { cJSON_Delete(root); return send_error(req, "out of memory"); }
     strlcpy(c->ssid, ssid_item->valuestring, sizeof(c->ssid));
     strlcpy(c->pass, cJSON_IsString(pass_item) ? pass_item->valuestring : "", sizeof(c->pass));
+    c->has_pass = cJSON_IsString(pass_item);
     cJSON_Delete(root);
 
     if (xTaskCreate(wifi_connect_task, "wifi_conn", 4096, c, 5, NULL) != pdPASS) {
@@ -247,6 +248,7 @@ static esp_err_t handle_mqtt_connect(httpd_req_t *req)
     strlcpy(c->pass, cJSON_IsString(pass_item) ? pass_item->valuestring : "", sizeof(c->pass));
     c->port = cJSON_IsNumber(port_item) ? (uint32_t)port_item->valuedouble : 1883;
     c->tls  = cJSON_IsTrue(tls_item);
+    c->has_pass = cJSON_IsString(pass_item);
     cJSON_Delete(root);
 
     if (xTaskCreate(mqtt_connect_task, "mqtt_conn", 4096, c, 5, NULL) != pdPASS) {

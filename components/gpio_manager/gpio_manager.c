@@ -30,6 +30,7 @@ static StaticTimer_t      s_restore_timer_bufs[GPIO_ACTION_MAX];
 static TimerHandle_t      s_system_led_timer = NULL;
 static StaticTimer_t      s_system_led_timer_buf;
 static bool               s_system_led_level = false;
+static uint8_t            s_system_led_phase = 0;
 static gpio_manager_ap_request_cb_t s_boot_ap_callback = NULL;
 
 static void gpio_manager_start_boot_button_monitor(void);
@@ -223,37 +224,85 @@ static void system_led_timer_cb(TimerHandle_t timer)
 {
     (void)timer;
     if (s_system_led_mode == SYSTEM_LED_OFF) return;
-    s_system_led_level = !s_system_led_level;
-    gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, s_system_led_level ? 1 : 0);
-}
 
-static TickType_t system_led_period_for_mode(system_led_mode_t mode)
-{
-    switch (mode) {
+    TickType_t next_period = pdMS_TO_TICKS(300);
+
+    switch (s_system_led_mode) {
         case SYSTEM_LED_AP_BLINK:
         case SYSTEM_LED_BOOT_AP_HINT:
-            return pdMS_TO_TICKS(300);
+            s_system_led_level = !s_system_led_level;
+            next_period = pdMS_TO_TICKS(300);
+            break;
+
         case SYSTEM_LED_BOOT_RESET_HINT:
-            return pdMS_TO_TICKS(100);
+            s_system_led_level = !s_system_led_level;
+            next_period = pdMS_TO_TICKS(100);
+            break;
+
+        case SYSTEM_LED_WIFI_DISCONNECTED_HINT:
+            switch (s_system_led_phase) {
+                case 0:
+                    s_system_led_level = true;
+                    next_period = pdMS_TO_TICKS(150);
+                    break;
+                case 1:
+                    s_system_led_level = false;
+                    next_period = pdMS_TO_TICKS(150);
+                    break;
+                case 2:
+                    s_system_led_level = true;
+                    next_period = pdMS_TO_TICKS(150);
+                    break;
+                default:
+                    s_system_led_level = false;
+                    next_period = pdMS_TO_TICKS(900);
+                    break;
+            }
+            s_system_led_phase = (s_system_led_phase + 1) % 4;
+            break;
+
+        case SYSTEM_LED_MQTT_DISCONNECTED_HINT:
+            switch (s_system_led_phase) {
+                case 0:
+                case 2:
+                case 4:
+                    s_system_led_level = true;
+                    next_period = pdMS_TO_TICKS(150);
+                    break;
+                case 1:
+                case 3:
+                    s_system_led_level = false;
+                    next_period = pdMS_TO_TICKS(150);
+                    break;
+                default:
+                    s_system_led_level = false;
+                    next_period = pdMS_TO_TICKS(900);
+                    break;
+            }
+            s_system_led_phase = (s_system_led_phase + 1) % 6;
+            break;
+
         case SYSTEM_LED_OFF:
         default:
-            return 0;
+            return;
     }
+
+    gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, s_system_led_level ? 1 : 0);
+    xTimerChangePeriod(timer, next_period, 0);
 }
 
 static void system_led_apply_mode(system_led_mode_t mode)
 {
     if (!s_system_led_timer) return;
-
-    TickType_t period = system_led_period_for_mode(mode);
     xTimerStop(s_system_led_timer, 0);
 
     s_system_led_mode = mode;
     s_system_led_level = false;
+    s_system_led_phase = 0;
     gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
 
-    if (period > 0) {
-        xTimerChangePeriod(s_system_led_timer, period, 0);
+    if (mode != SYSTEM_LED_OFF) {
+        xTimerChangePeriod(s_system_led_timer, pdMS_TO_TICKS(150), 0);
         xTimerStart(s_system_led_timer, 0);
     }
 }
