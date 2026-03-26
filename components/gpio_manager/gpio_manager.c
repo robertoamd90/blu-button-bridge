@@ -1,6 +1,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -11,7 +12,6 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "gpio_manager.h"
-#include "wifi_manager.h"
 
 static const char *TAG = "gpio_manager";
 static const char *NVS_NS = "gpio";
@@ -30,9 +30,11 @@ static StaticTimer_t      s_restore_timer_bufs[GPIO_ACTION_MAX];
 static TimerHandle_t      s_system_led_timer = NULL;
 static StaticTimer_t      s_system_led_timer_buf;
 static bool               s_system_led_level = false;
-static TaskHandle_t       s_system_led_test_task = NULL;
+static gpio_manager_ap_request_cb_t s_boot_ap_callback = NULL;
 
 static void gpio_manager_start_boot_button_monitor(void);
+
+static system_led_mode_t s_system_led_mode = SYSTEM_LED_OFF;
 
 static bool action_slot_used(const gpio_action_t *action)
 {
@@ -220,8 +222,40 @@ static void apply_loaded_outputs_locked(void)
 static void system_led_timer_cb(TimerHandle_t timer)
 {
     (void)timer;
+    if (s_system_led_mode == SYSTEM_LED_OFF) return;
     s_system_led_level = !s_system_led_level;
     gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, s_system_led_level ? 1 : 0);
+}
+
+static TickType_t system_led_period_for_mode(system_led_mode_t mode)
+{
+    switch (mode) {
+        case SYSTEM_LED_AP_BLINK:
+        case SYSTEM_LED_BOOT_AP_HINT:
+            return pdMS_TO_TICKS(300);
+        case SYSTEM_LED_BOOT_RESET_HINT:
+            return pdMS_TO_TICKS(100);
+        case SYSTEM_LED_OFF:
+        default:
+            return 0;
+    }
+}
+
+static void system_led_apply_mode(system_led_mode_t mode)
+{
+    if (!s_system_led_timer) return;
+
+    TickType_t period = system_led_period_for_mode(mode);
+    xTimerStop(s_system_led_timer, 0);
+
+    s_system_led_mode = mode;
+    s_system_led_level = false;
+    gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
+
+    if (period > 0) {
+        xTimerChangePeriod(s_system_led_timer, period, 0);
+        xTimerStart(s_system_led_timer, 0);
+    }
 }
 
 void gpio_manager_init(void)
@@ -244,6 +278,7 @@ void gpio_manager_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&led_cfg);
+    s_system_led_mode = SYSTEM_LED_OFF;
     gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
     s_system_led_level = false;
     s_system_led_timer = xTimerCreateStatic("sys_led",
@@ -266,59 +301,14 @@ void gpio_manager_init(void)
     gpio_manager_start_boot_button_monitor();
 }
 
-void gpio_manager_set_system_led_ap_mode(bool active)
+void gpio_manager_set_system_led_mode(system_led_mode_t mode)
 {
-    if (!s_system_led_timer || s_system_led_test_task) return;
-
-    if (active) {
-        s_system_led_level = false;
-        gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
-        xTimerStart(s_system_led_timer, 0);
-    } else {
-        xTimerStop(s_system_led_timer, 0);
-        s_system_led_level = false;
-        gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
-    }
+    system_led_apply_mode(mode);
 }
 
-static void system_led_test_task(void *arg)
+void gpio_manager_set_boot_ap_callback(gpio_manager_ap_request_cb_t cb)
 {
-    (void)arg;
-
-    xTimerStop(s_system_led_timer, 0);
-
-    while (true) {
-        gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
-        vTaskDelay(pdMS_TO_TICKS(800));
-
-        gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 1);
-        vTaskDelay(pdMS_TO_TICKS(800));
-
-        for (int i = 0; i < 6; i++) {
-            gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 1);
-            vTaskDelay(pdMS_TO_TICKS(150));
-            gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
-            vTaskDelay(pdMS_TO_TICKS(150));
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(1200));
-    }
-}
-
-void gpio_manager_start_system_led_test(void)
-{
-    if (s_system_led_test_task) return;
-    xTaskCreate(system_led_test_task, "sys_led_test", 2048, NULL, 1, &s_system_led_test_task);
-}
-
-void gpio_manager_stop_system_led_test(void)
-{
-    if (!s_system_led_test_task) return;
-    vTaskDelete(s_system_led_test_task);
-    s_system_led_test_task = NULL;
-    if (s_system_led_timer) xTimerStop(s_system_led_timer, 0);
-    s_system_led_level = false;
-    gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
+    s_boot_ap_callback = cb;
 }
 
 esp_err_t gpio_action_add(const gpio_action_t *action, int *out_idx)
@@ -500,32 +490,43 @@ static void boot_button_task(void *arg)
         }
 
         uint32_t held_ms = 0;
+        system_led_mode_t restore_mode = s_system_led_mode;
+        system_led_mode_t feedback_mode = SYSTEM_LED_OFF;
         while (gpio_get_level(BOOT_BTN_GPIO) == 0) {
             vTaskDelay(pdMS_TO_TICKS(BOOT_POLL_MS));
             held_ms += BOOT_POLL_MS;
 
             // Visual feedback: slow blink after 3 s
-            if (held_ms >= BOOT_AP_THRESHOLD_MS && held_ms < BOOT_RESET_THRESHOLD_MS) {
-                gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO,
-                               (held_ms / 300) % 2);
+            if (held_ms >= BOOT_AP_THRESHOLD_MS && held_ms < BOOT_RESET_THRESHOLD_MS &&
+                    feedback_mode != SYSTEM_LED_BOOT_AP_HINT) {
+                feedback_mode = SYSTEM_LED_BOOT_AP_HINT;
+                system_led_apply_mode(feedback_mode);
             }
             // Visual feedback: fast blink after 10 s
             if (held_ms >= BOOT_RESET_THRESHOLD_MS) {
-                gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO,
-                               (held_ms / 100) % 2);
+                if (feedback_mode != SYSTEM_LED_BOOT_RESET_HINT) {
+                    feedback_mode = SYSTEM_LED_BOOT_RESET_HINT;
+                    system_led_apply_mode(feedback_mode);
+                }
             }
         }
 
-        gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
+        system_led_apply_mode(restore_mode);
 
         if (held_ms >= BOOT_RESET_THRESHOLD_MS) {
             ESP_LOGW(TAG, "BOOT held %"PRIu32" ms — factory reset", held_ms);
-            nvs_flash_erase();
+            esp_err_t err = nvs_flash_erase();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "factory reset failed: %s", esp_err_to_name(err));
+                continue;
+            }
             esp_restart();
         } else if (held_ms >= BOOT_AP_THRESHOLD_MS && !ap_triggered) {
             ESP_LOGI(TAG, "BOOT held %"PRIu32" ms — starting AP", held_ms);
-            if (!wifi_ap_is_active()) {
-                wifi_start_ap();
+            if (s_boot_ap_callback) {
+                s_boot_ap_callback();
+            } else {
+                ESP_LOGW(TAG, "BOOT AP request ignored: no callback registered");
             }
             ap_triggered = true;
         }

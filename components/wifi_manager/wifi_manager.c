@@ -26,6 +26,7 @@ static volatile wifi_status_t s_status = WIFI_STATUS_NOT_CONFIG;
 static TimerHandle_t        s_reconnect_timer = NULL;
 static volatile bool        s_ap_active = false;
 static TaskHandle_t         s_dns_task_handle = NULL;
+static esp_netif_t         *s_sta_netif = NULL;
 
 // AP config in RAM — ssid is overwritten at runtime by wifi_ap_load_config (MAC-based)
 static wifi_ap_settings_t s_ap_cfg = {
@@ -61,8 +62,8 @@ static void on_wifi_disconnected(void *arg, esp_event_base_t base, int32_t id, v
     xEventGroupClearBits(wifi_events, WIFI_CONNECTED_BIT);
     if (s_status == WIFI_STATUS_UP || s_status == WIFI_STATUS_ERROR) {
         s_status = WIFI_STATUS_DOWN;
+        xTimerStart(s_reconnect_timer, 0);
     }
-    // Timer is periodic — no need to restart it here
 }
 
 // ── Private helpers ────────────────────────────────────────────────────────────
@@ -84,6 +85,28 @@ static bool load_credentials(char *ssid, size_t ssid_len,
 
     nvs_close(nvs);
     return ok;
+}
+
+static void set_device_hostname(void)
+{
+    if (!s_sta_netif) return;
+
+    uint8_t mac[6];
+    char hostname[32];
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+        // If we can't read the MAC address, use a generic hostname. This is unlikely to happen, but better than failing completely.
+        strlcpy(hostname, "blubuttonbridge", sizeof(hostname));
+    } else {
+        snprintf(hostname, sizeof(hostname), "bbb-%02x%02x%02x",
+                 mac[3], mac[4], mac[5]);
+    }
+
+    esp_err_t err = esp_netif_set_hostname(s_sta_netif, hostname);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "hostname set to %s", hostname);
+    } else {
+        ESP_LOGW(TAG, "failed to set hostname: %s", esp_err_to_name(err));
+    }
 }
 
 // Connects to a network; blocks until IP acquired or timeout (10 s).
@@ -190,10 +213,11 @@ void wifi_init(void)
     // Stack init
     esp_netif_init();
     esp_event_loop_create_default();
-    esp_netif_create_default_wifi_sta();
+    s_sta_netif = esp_netif_create_default_wifi_sta();
     esp_netif_create_default_wifi_ap();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
+    set_device_hostname();
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_ps(WIFI_PS_NONE);
     esp_wifi_start();
@@ -202,6 +226,7 @@ void wifi_init(void)
     s_reconnect_timer = xTimerCreate("wifi_rc", pdMS_TO_TICKS(5000), pdTRUE, NULL, reconnect_timer_cb);
     esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP,        on_wifi_got_ip,        NULL);
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_wifi_disconnected,  NULL);
+    gpio_manager_set_boot_ap_callback(wifi_start_ap);
 
     // Application logic: load config, start AP and/or connect
     wifi_ap_load_config(&s_ap_cfg);
@@ -296,7 +321,7 @@ void wifi_start_ap(void)
     s_ap_active = true;
     ble_access_scan_stop();
     esp_wifi_set_mode(WIFI_MODE_APSTA);
-    gpio_manager_set_system_led_ap_mode(true);
+    gpio_manager_set_system_led_mode(SYSTEM_LED_AP_BLINK);
 
     wifi_config_t ap_cfg = { 0 };
     strncpy((char *)ap_cfg.ap.ssid, s_ap_cfg.ssid, sizeof(ap_cfg.ap.ssid) - 1);
@@ -321,7 +346,7 @@ void wifi_stop_ap(void)
     if (!s_ap_active) return;
     s_ap_active = false; // signals DNS task to exit its loop
     esp_wifi_set_mode(WIFI_MODE_STA);
-    gpio_manager_set_system_led_ap_mode(false);
+    gpio_manager_set_system_led_mode(SYSTEM_LED_OFF);
     ble_access_scan_start();
     ESP_LOGI(TAG, "AP stopped");
 }

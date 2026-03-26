@@ -8,6 +8,15 @@
 #define GPIO_SYSTEM_LED_GPIO 2
 
 typedef enum {
+    SYSTEM_LED_OFF = 0,
+    SYSTEM_LED_AP_BLINK,
+    SYSTEM_LED_BOOT_AP_HINT,
+    SYSTEM_LED_BOOT_RESET_HINT,
+} system_led_mode_t;
+
+typedef void (*gpio_manager_ap_request_cb_t)(void);
+
+typedef enum {
     GPIO_ACTION_SET_ON = 0,
     GPIO_ACTION_SET_OFF,
     GPIO_ACTION_TOGGLE,
@@ -22,20 +31,15 @@ typedef struct {
     uint32_t restore_delay_ms;   // 0 = persistent change
 } gpio_action_t;
 
-// Initializes the GPIO action subsystem and the system LED task.
-// Call once from app_main after wifi_init().
+// Initializes the GPIO action subsystem, system LED handling, and BOOT monitor.
+// Call once from app_main during startup.
 void gpio_manager_init(void);
 
-// Enables or disables the AP-status blink on the reserved blue system LED.
-// When disabled, the system LED is turned off.
-void gpio_manager_set_system_led_ap_mode(bool active);
+// Sets the reserved blue system LED mode.
+void gpio_manager_set_system_led_mode(system_led_mode_t mode);
 
-// Starts a dedicated LED self-test pattern on the reserved blue system LED.
-// This overrides AP blink mode until gpio_manager_stop_system_led_test() is called.
-void gpio_manager_start_system_led_test(void);
-
-// Stops the dedicated LED self-test and turns the system LED off.
-void gpio_manager_stop_system_led_test(void);
+// Registers a callback invoked when the BOOT-button recovery flow requests AP mode.
+void gpio_manager_set_boot_ap_callback(gpio_manager_ap_request_cb_t cb);
 
 // Returns the list of GPIOs allowed for user-configured output actions.
 // The returned GPIOs exclude the system LED and unsafe boot/flash pins.
