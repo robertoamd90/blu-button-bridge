@@ -6,6 +6,21 @@
 
 #define BLE_ACCESS_MAX_DEVICES 8
 
+#define BLE_STATUS_LIST \
+    X(STARTING, "starting") \
+    X(SCANNING, "scanning") \
+    X(PAUSED,   "paused")   \
+    X(ERROR,    "error")
+
+typedef enum {
+#define X(name, str) BLE_STATUS_##name,
+    BLE_STATUS_LIST
+#undef X
+} ble_status_t;
+
+const char   *ble_status_str(ble_status_t s);
+ble_status_t  ble_get_status(void);
+
 // Registered BTHome v2 device.
 // Per-event fields are bitmasks: bit N set means trigger the action at slot N.
 typedef struct {

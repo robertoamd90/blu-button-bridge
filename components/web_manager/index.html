@@ -75,6 +75,7 @@
 <div id="status-bar">
   <span class="pill"><span class="dot" id="d-wifi"></span><span id="t-wifi">WiFi: …</span></span>
   <span class="pill"><span class="dot" id="d-mqtt"></span><span id="t-mqtt">MQTT: …</span></span>
+  <span class="pill"><span class="dot" id="d-ble"></span><span id="t-ble">BLE: …</span></span>
   <span class="pill"><span class="dot" id="d-ap"></span><span id="t-ap">AP: …</span></span>
 </div>
 
@@ -342,8 +343,8 @@
 
   function dotClass(val) {
     const v = val.toUpperCase();
-    if (v === 'UP' || v === 'SYNCED' || v === 'CONFIGURED') return 'up';
-    if (v === 'ERROR') return 'warn';
+    if (v === 'UP' || v === 'SCANNING') return 'up';
+    if (v === 'ERROR' || v === 'PAUSED' || v === 'STARTING') return 'warn';
     return 'down';
   }
 
@@ -436,7 +437,8 @@
       const d = await (await fetch('/api/status')).json();
       setStatus('d-wifi', 't-wifi', 'WiFi', d.wifi);
       setStatus('d-mqtt', 't-mqtt', 'MQTT', d.mqtt);
-      setStatus('d-ap',   't-ap',   'AP',   d.ap          ? 'up'         : 'down');
+      setStatus('d-ap',   't-ap',   'AP',   d.ap);
+      setStatus('d-ble',  't-ble',  'BLE',  d.ble);
     } catch(e) {}
   }
 

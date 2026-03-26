@@ -98,7 +98,8 @@ static esp_err_t handle_status(httpd_req_t *req)
     cJSON *obj = cJSON_CreateObject();
     cJSON_AddStringToObject(obj, "wifi",        wifi_status_str(wifi_get_status()));
     cJSON_AddStringToObject(obj, "mqtt",        mqtt_status_str(mqtt_get_status()));
-    cJSON_AddBoolToObject  (obj, "ap",          wifi_ap_is_active());
+    cJSON_AddStringToObject(obj, "ap",          wifi_ap_is_active() ? "up" : "down");
+    cJSON_AddStringToObject(obj, "ble",         ble_status_str(ble_get_status()));
     send_cjson(req, obj);
     return ESP_OK;
 }

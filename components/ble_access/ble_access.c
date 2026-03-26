@@ -35,6 +35,7 @@ static bool                 s_registering  = false;
 static bool                 s_has_pending  = false;
 static bool                 s_scan_enabled = true;
 static bool                 s_ble_ready    = false;
+static bool                 s_init_failed  = false;
 static uint8_t              s_pending_mac[6];
 static SemaphoreHandle_t    s_mutex;
 
@@ -376,6 +377,7 @@ static void on_sync(void)
 static void on_reset(int reason)
 {
     ESP_LOGW(TAG, "BLE host reset: %d", reason);
+    s_ble_ready = false;
 }
 
 static void host_task(void *arg)
@@ -386,11 +388,30 @@ static void host_task(void *arg)
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+const char *ble_status_str(ble_status_t s)
+{
+    static const char *names[] = {
+#define X(name, str) str,
+        BLE_STATUS_LIST
+#undef X
+    };
+    return (s < sizeof(names)/sizeof(*names)) ? names[s] : "?";
+}
+
+ble_status_t ble_get_status(void)
+{
+    if (s_init_failed)   return BLE_STATUS_ERROR;
+    if (!s_ble_ready)    return BLE_STATUS_STARTING;
+    if (!s_scan_enabled) return BLE_STATUS_PAUSED;
+    return BLE_STATUS_SCANNING;
+}
+
 void ble_access_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
     if (!s_mutex) {
         ESP_LOGE(TAG, "mutex allocation failed");
+        s_init_failed = true;
         return;
     }
     memset(s_psa_keys, 0, sizeof(s_psa_keys));
@@ -400,6 +421,7 @@ void ble_access_init(void)
     psa_status_t crypto_err = psa_crypto_init();
     if (crypto_err != PSA_SUCCESS) {
         ESP_LOGE(TAG, "psa_crypto_init failed: %d", (int)crypto_err);
+        s_init_failed = true;
         return;
     }
     nvs_load();
