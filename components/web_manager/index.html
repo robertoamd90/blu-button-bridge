@@ -883,8 +883,9 @@
     if (!confirm('Reboot the device?')) return;
     try {
       await api('/api/system/reboot', 'POST', {});
-      toast('toast-system', true, 'Rebooting… reconnect in a few seconds');
-    } catch(e) { toast('toast-system', true, 'Rebooting… reconnect in a few seconds'); }
+      toast('toast-system', true, 'Rebooting…');
+    } catch(e) { toast('toast-system', true, 'Rebooting…'); }
+    setTimeout(() => location.reload(), 8000);
   }
 
   async function systemFactoryReset() {
@@ -894,6 +895,7 @@
       await api('/api/system/factory-reset', 'POST', {});
       toast('toast-system', true, 'Resetting… device will reboot');
     } catch(e) { toast('toast-system', true, 'Resetting… device will reboot'); }
+    setTimeout(() => location.reload(), 8000);
   }
 
   // ── OTA ───────────────────────────────────────────────────────────────────
@@ -903,12 +905,14 @@
     if (!file) { toast('toast-ota', false, 'Select a .bin file first'); return; }
     if (!confirm('Upload firmware and reboot?')) return;
     toast('toast-ota', true, 'Uploading… do not disconnect');
+    let ok = false;
     try {
       const res = await fetch('/api/system/ota', { method: 'POST', body: file });
       const d = await res.json();
-      if (d.ok) toast('toast-ota', true, 'OTA complete, rebooting…');
+      if (d.ok) { toast('toast-ota', true, 'OTA complete, rebooting…'); ok = true; }
       else toast('toast-ota', false, d.error || 'OTA failed');
-    } catch(e) { toast('toast-ota', true, 'Rebooting…'); }
+    } catch(e) { toast('toast-ota', false, 'Upload failed — check connection'); }
+    if (ok) setTimeout(() => location.reload(), 8000);
   }
 
   // ── Config backup / restore ──────────────────────────────────────────────
@@ -935,9 +939,9 @@
         headers: { 'Content-Type': 'application/json' }
       });
       const d = await res.json();
-      if (d.ok) toast('toast-config', true, 'Config restored, rebooting…');
+      if (d.ok) { toast('toast-config', true, 'Config restored, rebooting…'); setTimeout(() => location.reload(), 8000); }
       else toast('toast-config', false, d.error || 'Restore failed');
-    } catch(e) { toast('toast-config', true, 'Rebooting…'); }
+    } catch(e) { toast('toast-config', false, 'Restore failed — check connection'); }
   }
 
   // ── BLE ───────────────────────────────────────────────────────────────────
