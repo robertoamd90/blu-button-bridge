@@ -318,6 +318,9 @@
   </div>
   <div class="card">
     <h2>Device</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+      Firmware: <strong id="fw-version">…</strong>
+    </p>
     <div class="row">
       <button class="btn btn-secondary" onclick="systemReboot()">Reboot</button>
       <button class="btn btn-danger"    onclick="systemFactoryReset()">Factory Reset</button>
@@ -439,6 +442,7 @@
       setStatus('d-mqtt', 't-mqtt', 'MQTT', d.mqtt);
       setStatus('d-ap',   't-ap',   'AP',   d.ap);
       setStatus('d-ble',  't-ble',  'BLE',  d.ble);
+      if (d.fw_version) document.getElementById('fw-version').textContent = 'v' + d.fw_version;
     } catch(e) {}
   }
 

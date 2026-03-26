@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_app_desc.h"
 #include "wifi_manager.h"
 #include "mqtt_manager.h"
 #include "gpio_manager.h"
@@ -95,11 +96,13 @@ static esp_err_t handle_root(httpd_req_t *req)
 
 static esp_err_t handle_status(httpd_req_t *req)
 {
+    const esp_app_desc_t *app = esp_app_get_description();
     cJSON *obj = cJSON_CreateObject();
     cJSON_AddStringToObject(obj, "wifi",        wifi_status_str(wifi_get_status()));
     cJSON_AddStringToObject(obj, "mqtt",        mqtt_status_str(mqtt_get_status()));
     cJSON_AddStringToObject(obj, "ap",          wifi_ap_is_active() ? "up" : "down");
     cJSON_AddStringToObject(obj, "ble",         ble_status_str(ble_get_status()));
+    cJSON_AddStringToObject(obj, "fw_version",  app->version);
     send_cjson(req, obj);
     return ESP_OK;
 }
