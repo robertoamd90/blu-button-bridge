@@ -322,16 +322,25 @@ static void dns_server_task(void *arg)
         if (len < 12) continue; // timeout or too short
 
         // Build response: copy query, flip QR bit, set ANCOUNT=1
+        // Need at least 16 extra bytes for the A record answer
+        if (len + 16 > (int)sizeof(buf)) continue;
         uint8_t resp[512];
         memcpy(resp, buf, len);
         resp[2] = 0x81; // QR=1, AA=1
         resp[3] = 0x80; // RA=1, RCODE=0
         resp[6] = 0; resp[7] = 1; // ANCOUNT=1
 
-        // Skip question section: QNAME + QTYPE + QCLASS
+        // Validate question section (QNAME labels + QTYPE + QCLASS).
+        // We don't use pos to build the response (A record uses a name pointer),
+        // but malformed packets must be rejected before we reply.
         int pos = 12;
-        while (pos < len && buf[pos] != 0) pos += buf[pos] + 1;
-        pos += 5; // null label + QTYPE(2) + QCLASS(2)
+        while (pos < len && buf[pos] != 0) {
+            uint8_t llen = buf[pos];
+            if (llen > 63 || pos + 1 + llen > len) goto skip; // bad label
+            pos += 1 + llen;
+        }
+        if (pos + 5 > len) continue; // truncated: no null + QTYPE + QCLASS
+        pos += 5;
 
         // Append A record answer
         int rpos = len;
@@ -345,6 +354,8 @@ static void dns_server_task(void *arg)
         resp[rpos++] = 4;    resp[rpos++] = 1;     // 192.168.4.1
 
         sendto(sock, resp, rpos, 0, (struct sockaddr *)&client, clen);
+        continue;
+skip:;  // malformed QNAME — drop the packet
     }
     close(sock);
     s_dns_task_handle = NULL;
