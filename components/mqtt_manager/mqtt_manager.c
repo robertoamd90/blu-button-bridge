@@ -111,23 +111,27 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
                 ESP_LOGW(TAG, "message too large, skipped");
                 break;
             }
-            if (ev->data_len > 0 && ev->topic_len > 0) {
-                char payload[ev->data_len + 1];
-                memcpy(payload, ev->data, ev->data_len);
+            if (ev->topic_len > 0) {
+                char payload[MQTT_MAX_PAYLOAD + 1];
+                if (ev->data_len > 0) {
+                    memcpy(payload, ev->data, ev->data_len);
+                }
                 payload[ev->data_len] = '\0';
 
-                char topic[ev->topic_len + 1];
+                char topic[MQTT_MAX_TOPIC_LEN + 1];
                 memcpy(topic, ev->topic, ev->topic_len);
                 topic[ev->topic_len] = '\0';
 
+                mqtt_message_cb_t cb = NULL;
                 xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
                 for (int i = 0; i < s_nsubs; i++) {
                     if (strcmp(s_subs[i].topic, topic) == 0) {
-                        s_subs[i].cb(topic, payload, ev->data_len);
+                        cb = s_subs[i].cb;
                         break;
                     }
                 }
                 xSemaphoreGive(s_subs_mutex);
+                if (cb) cb(topic, payload, ev->data_len);
             }
             break;
 
