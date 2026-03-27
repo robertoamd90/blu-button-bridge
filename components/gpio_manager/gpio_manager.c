@@ -332,7 +332,7 @@ void gpio_manager_init(void)
     s_system_led_level = false;
     s_system_led_timer = xTimerCreateStatic("sys_led",
                                             pdMS_TO_TICKS(300),
-                                            pdTRUE,
+                                            pdFALSE,
                                             NULL,
                                             system_led_timer_cb,
                                             &s_system_led_timer_buf);
