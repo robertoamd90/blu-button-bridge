@@ -91,6 +91,9 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             set_status(MQTT_STATUS_UP);
             xEventGroupSetBits(s_events, MQTT_CONNECTED_BIT);
             ESP_LOGI(TAG, "connected to broker");
+            // s_client is safe here without s_op_mutex: this callback runs inside
+            // the MQTT client task, and destroy_client() blocks until that task
+            // exits, so s_client cannot be freed while we are executing.
             xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
             for (int i = 0; i < s_nsubs; i++) {
                 esp_mqtt_client_subscribe(s_client, s_subs[i].topic, 1);
@@ -551,11 +554,14 @@ void mqtt_subscribe(const char *topic, mqtt_message_cb_t cb)
     strlcpy(s_subs[s_nsubs].topic, topic, sizeof(s_subs[s_nsubs].topic));
     s_subs[s_nsubs].cb = cb;
     s_nsubs++;
-
     xSemaphoreGive(s_subs_mutex);
-    if (s_status == MQTT_STATUS_UP) {
+
+    // Subscribe on the broker under s_op_mutex, which guards s_client lifetime
+    xSemaphoreTake(s_op_mutex, portMAX_DELAY);
+    if (s_status == MQTT_STATUS_UP && s_client) {
         esp_mqtt_client_subscribe(s_client, topic, 1);
     }
+    xSemaphoreGive(s_op_mutex);
 }
 
 const char *mqtt_status_str(mqtt_status_t s)
