@@ -421,7 +421,7 @@ void mqtt_connect_api(const char *host, uint32_t port,
     xSemaphoreTake(s_op_mutex, portMAX_DELAY);
 
     if (password_provided) {
-        strncpy(pass_to_use, password, sizeof(pass_to_use) - 1);
+        strlcpy(pass_to_use, password, sizeof(pass_to_use));
     } else {
         keep_existing_pass = load_saved_password(pass_to_use, sizeof(pass_to_use));
     }
@@ -544,7 +544,7 @@ void mqtt_subscribe(const char *topic, mqtt_message_cb_t cb)
         xSemaphoreGive(s_subs_mutex);
         return;
     }
-    strncpy(s_subs[s_nsubs].topic, topic, sizeof(s_subs[s_nsubs].topic) - 1);
+    strlcpy(s_subs[s_nsubs].topic, topic, sizeof(s_subs[s_nsubs].topic));
     s_subs[s_nsubs].cb = cb;
     s_nsubs++;
 

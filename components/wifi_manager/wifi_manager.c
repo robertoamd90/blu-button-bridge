@@ -158,8 +158,8 @@ static void wifi_connect(const char *ssid, const char *pass)
     wifi_config_t cfg = {};
     cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-    strncpy((char *)cfg.sta.ssid,     ssid, sizeof(cfg.sta.ssid));
-    strncpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password));
+    strlcpy((char *)cfg.sta.ssid,     ssid, sizeof(cfg.sta.ssid));
+    strlcpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password));
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
     esp_wifi_connect();
 
@@ -192,7 +192,7 @@ void wifi_connect_api(const char *ssid, const char *pass, bool password_provided
             strlcpy(pass_to_use, saved_pass, sizeof(pass_to_use));
         }
     } else {
-        strncpy(pass_to_use, pass, sizeof(pass_to_use) - 1);
+        strlcpy(pass_to_use, pass, sizeof(pass_to_use));
     }
 
     nvs_handle_t nvs;
@@ -366,12 +366,12 @@ void wifi_start_ap(void)
     update_system_led_status();
 
     wifi_config_t ap_cfg = { 0 };
-    strncpy((char *)ap_cfg.ap.ssid, s_ap_cfg.ssid, sizeof(ap_cfg.ap.ssid) - 1);
+    strlcpy((char *)ap_cfg.ap.ssid, s_ap_cfg.ssid, sizeof(ap_cfg.ap.ssid));
     ap_cfg.ap.ssid_len      = (uint8_t)strlen(s_ap_cfg.ssid);
     ap_cfg.ap.channel       = 1;
     ap_cfg.ap.max_connection = 4;
     if (strlen(s_ap_cfg.password) >= 8) {
-        strncpy((char *)ap_cfg.ap.password, s_ap_cfg.password, sizeof(ap_cfg.ap.password) - 1);
+        strlcpy((char *)ap_cfg.ap.password, s_ap_cfg.password, sizeof(ap_cfg.ap.password));
         ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
     } else {
         ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
@@ -407,9 +407,9 @@ void wifi_ap_load_config(wifi_ap_settings_t *cfg)
         snprintf(cfg->ssid, sizeof(cfg->ssid), "BBB-%02X%02X%02X",
                  mac[3], mac[4], mac[5]);
     } else {
-        strncpy(cfg->ssid, "BBB-Config", sizeof(cfg->ssid) - 1);
+        strlcpy(cfg->ssid, "BBB-Config", sizeof(cfg->ssid));
     }
-    strncpy(cfg->password, "12345678", sizeof(cfg->password) - 1);
+    strlcpy(cfg->password, "12345678", sizeof(cfg->password));
 
     nvs_handle_t nvs;
     if (nvs_open("ap_cfg", NVS_READONLY, &nvs) != ESP_OK) return;
@@ -421,7 +421,7 @@ void wifi_ap_load_config(wifi_ap_settings_t *cfg)
 
     len = sizeof(cfg->ssid);
     if (nvs_get_str(nvs, "ssid", cfg->ssid, &len) == ESP_OK && strlen(cfg->ssid) == 0)
-        strncpy(cfg->ssid, "BBB-Config", sizeof(cfg->ssid) - 1); // guard empty
+        strlcpy(cfg->ssid, "BBB-Config", sizeof(cfg->ssid)); // guard empty
 
     len = sizeof(cfg->password);
     nvs_get_str(nvs, "pass", cfg->password, &len);
@@ -476,8 +476,7 @@ int wifi_scan_get_results(wifi_scan_entry_t *results, int max_count)
     }
 
     for (int i = 0; i < (int)count; i++) {
-        strncpy(results[i].ssid, (char *)aps[i].ssid, sizeof(results[i].ssid) - 1);
-        results[i].ssid[sizeof(results[i].ssid) - 1] = '\0';
+        strlcpy(results[i].ssid, (char *)aps[i].ssid, sizeof(results[i].ssid));
         results[i].rssi = aps[i].rssi;
     }
 
