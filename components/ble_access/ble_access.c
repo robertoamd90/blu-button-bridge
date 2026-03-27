@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/timers.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
@@ -22,6 +23,7 @@ static const char *TAG = "ble_access";
 #define BTHOME_UUID_HI  0xFC
 #define BTN_OBJ_ID      0x3A   // BTHome button object
 #define DECRYPT_ERROR_THRESHOLD 3
+#define COUNTER_SAVE_INTERVAL  10  // persist anti-replay counter every N successful decrypts
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -30,6 +32,9 @@ static psa_key_id_t         s_psa_keys[BLE_ACCESS_MAX_DEVICES]; // cached PSA ke
 static bool                 s_key_import_errors[BLE_ACCESS_MAX_DEVICES];
 static bool                 s_decrypt_errors[BLE_ACCESS_MAX_DEVICES];
 static uint8_t              s_decrypt_failures[BLE_ACCESS_MAX_DEVICES];
+static uint8_t              s_counter_since_save[BLE_ACCESS_MAX_DEVICES];
+static bool                 s_nvs_dirty    = false;
+static TimerHandle_t        s_nvs_timer    = NULL;
 static int                  s_count        = 0;
 static bool                 s_registering  = false;
 static bool                 s_has_pending  = false;
@@ -77,6 +82,21 @@ static void nvs_load(void)
     }
     s_count = loaded;
     nvs_close(h);
+}
+
+// Deferred NVS persistence — called from the timer daemon task, outside the BLE scan path
+static void nvs_flush_timer_cb(TimerHandle_t t)
+{
+    (void)t;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_nvs_dirty) {
+        if (nvs_save() == ESP_OK) {
+            s_nvs_dirty = false;
+        } else {
+            xTimerReset(s_nvs_timer, 0);
+        }
+    }
+    xSemaphoreGive(s_mutex);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -308,6 +328,18 @@ static void handle_adv(const uint8_t mac[6], const uint8_t *adv, uint8_t adv_len
     note_decrypt_success(dev_idx);
     dev->last_counter = counter;
 
+    // Periodically persist the anti-replay counter to NVS so it survives reboots.
+    // Actual flash I/O is deferred to a timer callback outside the scan path.
+    if (++s_counter_since_save[dev_idx] >= COUNTER_SAVE_INTERVAL) {
+        s_counter_since_save[dev_idx] = 0;
+        if (s_nvs_timer) {
+            s_nvs_dirty = true;
+            xTimerReset(s_nvs_timer, 0);
+        } else {
+            nvs_save();
+        }
+    }
+
     // Parse BTHome objects in decrypted payload
     int pi = 0;
     while (pi < dec_len) {
@@ -418,6 +450,12 @@ void ble_access_init(void)
     memset(s_key_import_errors, 0, sizeof(s_key_import_errors));
     memset(s_decrypt_errors, 0, sizeof(s_decrypt_errors));
     memset(s_decrypt_failures, 0, sizeof(s_decrypt_failures));
+    memset(s_counter_since_save, 0, sizeof(s_counter_since_save));
+    s_nvs_timer = xTimerCreate("ble_nvs", pdMS_TO_TICKS(2000), pdFALSE,
+                               NULL, nvs_flush_timer_cb);
+    if (!s_nvs_timer) {
+        ESP_LOGW(TAG, "NVS flush timer creation failed — counter persistence will be synchronous");
+    }
     psa_status_t crypto_err = psa_crypto_init();
     if (crypto_err != PSA_SUCCESS) {
         ESP_LOGE(TAG, "psa_crypto_init failed: %d", (int)crypto_err);
@@ -501,6 +539,7 @@ esp_err_t ble_access_register_confirm(const uint8_t mac[6], const uint8_t key[16
         return err;
     }
     clear_crypto_status(idx);
+    s_counter_since_save[idx] = 0;
 
     err = nvs_save();
     if (err != ESP_OK) {
@@ -512,11 +551,13 @@ esp_err_t ble_access_register_confirm(const uint8_t mac[6], const uint8_t key[16
         return err;
     }
 
+    char saved_label[32];
+    strlcpy(saved_label, dev->label, sizeof(saved_label));
     s_registering = false;
     s_has_pending = false;
     xSemaphoreGive(s_mutex);
-    if (err == ESP_OK) ESP_LOGI(TAG, "Device '%s' registered", dev->label);
-    return err;
+    ESP_LOGI(TAG, "Device '%s' registered", saved_label);
+    return ESP_OK;
 }
 
 void ble_access_register_cancel(void)
@@ -707,9 +748,12 @@ esp_err_t ble_access_device_delete(const uint8_t mac[6])
                     (s_count - i - 1) * sizeof(bool));
             memmove(&s_decrypt_failures[i], &s_decrypt_failures[i + 1],
                     (s_count - i - 1) * sizeof(uint8_t));
+            memmove(&s_counter_since_save[i], &s_counter_since_save[i + 1],
+                    (s_count - i - 1) * sizeof(uint8_t));
             s_count--;
             s_psa_keys[s_count] = PSA_KEY_ID_NULL;
             clear_crypto_status(s_count);
+            s_counter_since_save[s_count] = 0;
             esp_err_t err = nvs_save();
             xSemaphoreGive(s_mutex);
             return err;
