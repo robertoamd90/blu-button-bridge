@@ -53,14 +53,19 @@ static void send_cjson(httpd_req_t *req, cJSON *obj)
     cJSON_free(str);
 }
 
-static esp_err_t send_error(httpd_req_t *req, const char *msg)
+static esp_err_t send_error_status(httpd_req_t *req, const char *status, const char *msg)
 {
     cJSON *obj = cJSON_CreateObject();
     cJSON_AddBoolToObject(obj, "ok", false);
     cJSON_AddStringToObject(obj, "error", msg);
-    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_status(req, status);
     send_cjson(req, obj);
     return ESP_OK;
+}
+
+static esp_err_t send_error(httpd_req_t *req, const char *msg)
+{
+    return send_error_status(req, "400 Bad Request", msg);
 }
 
 // ── Async background tasks (WiFi/MQTT connect block up to 10s) ───────────────
@@ -694,8 +699,7 @@ static esp_err_t handle_gpio_action_delete(httpd_req_t *req)
 // GET /api/ble/devices
 static esp_err_t handle_ble_devices(httpd_req_t *req)
 {
-    ble_device_t *devs = malloc(BLE_ACCESS_MAX_DEVICES * sizeof(ble_device_t));
-    if (!devs) return send_error(req, "out of memory");
+    ble_device_t devs[BLE_ACCESS_MAX_DEVICES];
     int n = ble_access_get_devices(devs, BLE_ACCESS_MAX_DEVICES);
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < n; i++) {
@@ -718,7 +722,6 @@ static esp_err_t handle_ble_devices(httpd_req_t *req)
         cJSON_AddNumberToObject(obj, "gpio_long_press",   d->gpio_long_press);
         cJSON_AddItemToArray(arr, obj);
     }
-    free(devs);
     send_cjson(req, arr);
     return ESP_OK;
 }
@@ -933,8 +936,15 @@ static esp_err_t handle_ble_device_delete(httpd_req_t *req)
 // POST /api/system/ota  (raw binary body)
 static esp_err_t handle_ota_upload(httpd_req_t *req)
 {
+    if (req->content_len <= 0)
+        return send_error(req, "empty firmware image");
+
     const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
     if (!part) return send_error(req, "no OTA partition");
+
+    if ((size_t)req->content_len > part->size)
+        return send_error_status(req, "413 Payload Too Large",
+                                 "firmware image too large for OTA partition");
 
     esp_ota_handle_t ota;
     esp_err_t err = esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota);
@@ -951,7 +961,9 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
     }
 
     err = esp_ota_end(ota);
-    if (err != ESP_OK) return send_error(req, "OTA validation failed");
+    if (err != ESP_OK)
+        return send_error_status(req, "422 Unprocessable Entity",
+                                 "OTA validation failed");
 
     err = esp_ota_set_boot_partition(part);
     if (err != ESP_OK) return send_error(req, "set boot partition failed");
