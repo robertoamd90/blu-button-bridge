@@ -161,6 +161,11 @@ static bool auth_require(httpd_req_t *req)
     return true;
 }
 
+static bool auth_username_is_valid(const char *username)
+{
+    return username && strchr(username, ':') == NULL;
+}
+
 static esp_err_t handle_with_auth(httpd_req_t *req)
 {
     route_ctx_t *ctx = (route_ctx_t *)req->user_ctx;
@@ -538,9 +543,22 @@ static esp_err_t handle_auth_config_set(httpd_req_t *req)
 
     if (cJSON_IsBool(enabled_item))
         next.enabled = cJSON_IsTrue(enabled_item);
-    if (cJSON_IsString(user_item))
+    if (cJSON_IsString(user_item)) {
+        if (strlen(user_item->valuestring) > AUTH_USER_MAX) {
+            cJSON_Delete(root);
+            return send_error(req, "username too long");
+        }
+        if (!auth_username_is_valid(user_item->valuestring)) {
+            cJSON_Delete(root);
+            return send_error(req, "username cannot contain ':'");
+        }
         strlcpy(next.username, user_item->valuestring, sizeof(next.username));
+    }
     if (cJSON_IsString(pass_item)) {
+        if (strlen(pass_item->valuestring) > AUTH_PASS_MAX) {
+            cJSON_Delete(root);
+            return send_error(req, "password too long");
+        }
         if (pass_item->valuestring[0] == '\0') {
             next.password_sha256[0] = '\0';
             next.password_set = false;
@@ -555,6 +573,8 @@ static esp_err_t handle_auth_config_set(httpd_req_t *req)
 
     if (next.enabled && next.username[0] == '\0')
         return send_error(req, "username required when auth is enabled");
+    if (next.enabled && !auth_username_is_valid(next.username))
+        return send_error(req, "username cannot contain ':'");
     if (next.enabled && !next.password_set)
         return send_error(req, "password required when auth is enabled");
 
