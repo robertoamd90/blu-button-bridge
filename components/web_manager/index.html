@@ -331,6 +331,22 @@
     <div id="toast-config" class="toast"></div>
   </div>
   <div class="card">
+    <h2>Access Control</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+      Optional HTTP Basic Auth for the web UI and API. When enabled, the browser will use its standard username/password prompt.
+    </p>
+    <div class="check-row">
+      <input type="checkbox" id="auth-enabled">
+      <label for="auth-enabled">Enable Basic Auth</label>
+    </div>
+    <label>Username</label>
+    <input id="auth-user" type="text" maxlength="32" placeholder="admin">
+    <label>Password <small>(leave unchanged to keep current)</small></label>
+    <input id="auth-pass" type="password" maxlength="64" placeholder="(unchanged)" onfocus="authPassFocus()" oninput="authPassInput()">
+    <button class="btn btn-primary" onclick="authSave()">Save Auth Settings</button>
+    <div id="toast-auth" class="toast"></div>
+  </div>
+  <div class="card">
     <h2>Device</h2>
     <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
       Firmware: <strong id="fw-version">…</strong>
@@ -404,6 +420,8 @@
   let _wifiPassForcedClear = false;
   let _mqttPasswordSet = false;
   let _mqttPassDirty = false;
+  let _authPasswordSet = false;
+  let _authPassDirty = false;
 
   function resetWifiPasswordField(hasPassword) {
     const el = document.getElementById('wifi-pass');
@@ -432,6 +450,19 @@
     }
   }
 
+  function resetAuthPasswordField(hasPassword) {
+    const el = document.getElementById('auth-pass');
+    _authPasswordSet = !!hasPassword;
+    _authPassDirty = false;
+    if (_authPasswordSet) {
+      el.value = MASKED_SECRET;
+      el.placeholder = '';
+    } else {
+      el.value = '';
+      el.placeholder = '(unchanged)';
+    }
+  }
+
   function wifiPassFocus() {
     const el = document.getElementById('wifi-pass');
     if (_wifiPasswordSet && !_wifiPassDirty && !_wifiPassForcedClear && el.value === MASKED_SECRET) {
@@ -446,6 +477,13 @@
     }
   }
 
+  function authPassFocus() {
+    const el = document.getElementById('auth-pass');
+    if (_authPasswordSet && !_authPassDirty && el.value === MASKED_SECRET) {
+      el.select();
+    }
+  }
+
   function wifiPassInput() {
     _wifiPassDirty = true;
     _wifiPassForcedClear = false;
@@ -453,6 +491,10 @@
 
   function mqttPassInput() {
     _mqttPassDirty = true;
+  }
+
+  function authPassInput() {
+    _authPassDirty = true;
   }
 
   function wifiSsidChanged() {
@@ -638,6 +680,15 @@
       document.getElementById('mqtt-user').value = d.username || '';
       document.getElementById('mqtt-tls').checked = !!d.tls;
       resetMqttPasswordField(d.password_set);
+    } catch(e) {}
+  }
+
+  async function loadAuthConfig() {
+    try {
+      const d = await (await fetch('/api/system/auth')).json();
+      document.getElementById('auth-enabled').checked = !!d.enabled;
+      document.getElementById('auth-user').value = d.username || '';
+      resetAuthPasswordField(d.password_set);
     } catch(e) {}
   }
 
@@ -937,6 +988,28 @@
       toast('toast-system', true, 'Resetting… device will reboot');
     } catch(e) { toast('toast-system', true, 'Resetting… device will reboot'); }
     setTimeout(() => location.reload(), 8000);
+  }
+
+  async function authSave() {
+    const enabled = document.getElementById('auth-enabled').checked;
+    const username = document.getElementById('auth-user').value.trim();
+    const body = { enabled, username };
+    const pass = document.getElementById('auth-pass').value;
+
+    if (enabled && !username)
+      return toast('toast-auth', false, 'Username is required');
+    if (enabled && (!_authPasswordSet || _authPassDirty) && !pass)
+      return toast('toast-auth', false, 'Password is required when enabling auth');
+    if (!_authPasswordSet || _authPassDirty) {
+      body.password = pass;
+    }
+
+    try {
+      const d = await api('/api/system/auth', 'POST', body);
+      if (!d.ok) return toast('toast-auth', false, d.error || 'Failed');
+      toast('toast-auth', true, enabled ? 'Saved. Reloading to apply auth…' : 'Saved. Reloading…');
+      setTimeout(() => location.reload(), 1200);
+    } catch(e) { toast('toast-auth', false, 'Request failed'); }
   }
 
   // ── OTA ───────────────────────────────────────────────────────────────────
@@ -1268,6 +1341,7 @@
   setGithubUpdateUi(null);
   loadWifiConfig();
   loadMqttConfig();
+  loadAuthConfig();
   loadMqttActions();
   loadGpioPins();
   loadGpioActions();
