@@ -295,6 +295,20 @@
 <!-- System -->
 <div id="tab-system" class="tab">
   <div class="card">
+    <h2>GitHub Updates</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+      Check the latest public GitHub release and install it after SHA-256 verification.
+    </p>
+    <div style="font-size:.9rem;margin-bottom:.35rem">Current version: <strong id="gh-current-version">…</strong></div>
+    <div style="font-size:.9rem;margin-bottom:.35rem">Latest release: <strong id="gh-latest-version">Not checked</strong></div>
+    <div style="font-size:.85rem;color:#555;margin-bottom:.75rem" id="gh-update-status">Run a manual check to look for updates.</div>
+    <div class="row">
+      <button class="btn btn-secondary" onclick="githubUpdateCheck()">Check for Updates</button>
+      <button class="btn btn-primary" id="gh-update-install-btn" onclick="githubUpdateInstall()" style="display:none">Install Update</button>
+    </div>
+    <div id="toast-gh-update" class="toast"></div>
+  </div>
+  <div class="card">
     <h2>Firmware Update (OTA)</h2>
     <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
       Upload a new firmware binary (.bin). The device will reboot after a successful update.
@@ -374,6 +388,29 @@
 
   function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function formatAge(seconds) {
+    if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return 'unknown';
+    const s = Math.max(0, Math.floor(Number(seconds)));
+    if (s < 60) return s + 's ago';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    const d = Math.floor(h / 24);
+    return d + 'd ago';
+  }
+
+  function formatBleEvent(ev) {
+    switch (ev) {
+      case 'press': return 'Press';
+      case 'double_press': return 'Double press';
+      case 'triple_press': return 'Triple press';
+      case 'long_press': return 'Long press';
+      case 'button_hold': return 'Button hold';
+      default: return ev || 'Unknown';
+    }
   }
 
   const MASKED_SECRET = '********';
@@ -484,7 +521,11 @@
       setStatus('d-mqtt', 't-mqtt', 'MQTT', d.mqtt);
       setStatus('d-ap',   't-ap',   'AP',   d.ap);
       setStatus('d-ble',  't-ble',  'BLE',  d.ble);
-      if (d.fw_version) document.getElementById('fw-version').textContent = 'v' + d.fw_version;
+      if (d.fw_version) {
+        const version = 'v' + d.fw_version;
+        document.getElementById('fw-version').textContent = version;
+        document.getElementById('gh-current-version').textContent = version;
+      }
     } catch(e) {}
   }
 
@@ -973,6 +1014,71 @@
 
   // ── OTA ───────────────────────────────────────────────────────────────────
 
+  let _githubUpdateInfo = null;
+
+  function setGithubUpdateUi(data) {
+    const latestEl = document.getElementById('gh-latest-version');
+    const statusEl = document.getElementById('gh-update-status');
+    const installBtn = document.getElementById('gh-update-install-btn');
+
+    if (!data) {
+      latestEl.textContent = 'Not checked';
+      statusEl.textContent = 'Run a manual check to look for updates.';
+      installBtn.style.display = 'none';
+      return;
+    }
+
+    latestEl.textContent = data.latest_version || 'Unknown';
+    if (data.update_available) {
+      statusEl.textContent = `Update available (${data.asset_name}, ${(data.asset_size / 1024).toFixed(0)} KB).`;
+      installBtn.style.display = 'inline-flex';
+    } else {
+      statusEl.textContent = 'This device is already up to date.';
+      installBtn.style.display = 'none';
+    }
+  }
+
+  async function githubUpdateCheck() {
+    _githubUpdateInfo = null;
+    setGithubUpdateUi(null);
+    toast('toast-gh-update', true, 'Checking GitHub releases…');
+    try {
+      const d = await (await fetch('/api/system/update/check')).json();
+      if (!d.ok) {
+        toast('toast-gh-update', false, d.error || 'Update check failed');
+        return;
+      }
+      _githubUpdateInfo = d;
+      setGithubUpdateUi(d);
+      toast('toast-gh-update', true, d.update_available ? 'New firmware available' : 'Already up to date');
+    } catch(e) {
+      toast('toast-gh-update', false, 'Could not check GitHub right now');
+    }
+  }
+
+  async function githubUpdateInstall() {
+    if (!_githubUpdateInfo || !_githubUpdateInfo.update_available) {
+      toast('toast-gh-update', false, 'Check for updates first');
+      return;
+    }
+    if (!confirm(`Install ${_githubUpdateInfo.latest_version} from GitHub and reboot?`)) return;
+
+    toast('toast-gh-update', true, 'Downloading and verifying update…');
+    let ok = false;
+    try {
+      const d = await api('/api/system/update', 'POST', {});
+      if (d.ok) {
+        toast('toast-gh-update', true, 'Update complete, rebooting…');
+        ok = true;
+      } else {
+        toast('toast-gh-update', false, d.error || 'Update failed');
+      }
+    } catch(e) {
+      toast('toast-gh-update', false, 'Update failed — check the network connection');
+    }
+    if (ok) setTimeout(() => location.reload(), 8000);
+  }
+
   async function otaUpload() {
     const file = document.getElementById('ota-file').files[0];
     if (!file) { toast('toast-ota', false, 'Select a .bin file first'); return; }
@@ -1062,6 +1168,17 @@
             ${d.decrypt_error ? ' <span style="color:#c2410c;font-size:.75rem;font-weight:600">&#9888; Decrypt Error</span>' : ''}
           </div>
           <div style="font-size:.76rem;color:#888;font-family:monospace">${d.mac}</div>
+          <div style="font-size:.76rem;color:#555;margin-top:.2rem">
+            ${d.battery_percent === null ? 'Battery: --' : ('Battery: ' + d.battery_percent + '%')}
+          </div>
+          <div style="font-size:.76rem;color:#555;margin-top:.15rem">
+            ${d.last_seen_age_s === null ? 'Last seen: waiting for traffic' : ('Last seen: ' + formatAge(d.last_seen_age_s))}
+          </div>
+          <div style="font-size:.76rem;color:#555;margin-top:.15rem">
+            ${d.last_button_event === null
+              ? 'Last event: none yet'
+              : ('Last event: ' + formatBleEvent(d.last_button_event) + ' (' + formatAge(d.last_button_event_age_s) + ')')}
+          </div>
         </div>
         <div class="row" style="margin:0;gap:.35rem">
           <button class="btn btn-secondary" style="padding:.3rem .7rem;font-size:.8rem"
@@ -1221,6 +1338,7 @@
   // ── Init ──────────────────────────────────────────────────────────────────
 
   refreshStatus();
+  setGithubUpdateUi(null);
   loadWifiConfig();
   loadMqttConfig();
   loadAuthConfig();
@@ -1229,7 +1347,10 @@
   loadGpioActions();
   loadApConfig();
   loadBleDevices();
-  setInterval(refreshStatus, 5000);
+  setInterval(() => {
+    refreshStatus();
+    loadBleDevices();
+  }, 5000);
 </script>
 </body>
 </html>

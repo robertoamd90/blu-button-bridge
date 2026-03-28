@@ -18,8 +18,19 @@ typedef enum {
 #undef X
 } ble_status_t;
 
+typedef enum {
+    BLE_BUTTON_EVENT_NONE = 0,
+    BLE_BUTTON_EVENT_PRESS = 1,
+    BLE_BUTTON_EVENT_DOUBLE_PRESS = 2,
+    BLE_BUTTON_EVENT_TRIPLE_PRESS = 3,
+    BLE_BUTTON_EVENT_LONG_PRESS = 4,
+    BLE_BUTTON_EVENT_BUTTON_HOLD = 0x80,
+    BLE_BUTTON_EVENT_BUTTON_HOLD_LEGACY = 0xFE,
+} ble_button_event_t;
+
 const char   *ble_status_str(ble_status_t s);
 ble_status_t  ble_get_status(void);
+const char   *ble_button_event_str(uint8_t event);
 
 // Registered BTHome v2 device.
 // Per-event fields are bitmasks: bit N set means trigger the action at slot N.
@@ -38,6 +49,16 @@ typedef struct {
     uint16_t gpio_triple_press;
     uint16_t gpio_long_press;
 } ble_device_t;
+
+typedef struct {
+    bool     has_last_seen;
+    uint32_t last_seen_age_s;
+    bool     has_last_button_event;
+    uint8_t  last_button_event;
+    uint32_t last_button_event_age_s;
+    bool     has_battery_percent;
+    uint8_t  battery_percent;
+} ble_device_telemetry_t;
 
 // Initialises NimBLE and starts passive scanning. Call once from app_main.
 void      ble_access_init(void);
@@ -70,6 +91,10 @@ int       ble_access_get_devices(ble_device_t *out, int max_count);
 
 // Copies a single device by MAC into *out. Returns ESP_OK or ESP_ERR_NOT_FOUND.
 esp_err_t ble_access_get_device_by_mac(const uint8_t mac[6], ble_device_t *out);
+
+// Returns runtime telemetry for the device with the given MAC.
+// Age fields are expressed relative to current uptime.
+esp_err_t ble_access_get_device_telemetry(const uint8_t mac[6], ble_device_telemetry_t *out);
 
 // Updates label, enabled flag, and event bitmasks for the device with the given MAC.
 // The key field in *updated is ignored — use ble_access_device_update_key() to change it.
