@@ -700,8 +700,10 @@ static esp_err_t handle_ble_devices(httpd_req_t *req)
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < n; i++) {
         ble_device_t *d = &devs[i];
+        ble_device_telemetry_t telemetry = {0};
         char mac_str[18];
         mac_to_str(d->mac, mac_str);
+        ble_access_get_device_telemetry(d->mac, &telemetry);
         cJSON *obj = cJSON_CreateObject();
         cJSON_AddStringToObject(obj, "mac",              mac_str);
         cJSON_AddStringToObject(obj, "label",            d->label);
@@ -716,6 +718,24 @@ static esp_err_t handle_ble_devices(httpd_req_t *req)
         cJSON_AddNumberToObject(obj, "gpio_double_press", d->gpio_double_press);
         cJSON_AddNumberToObject(obj, "gpio_triple_press", d->gpio_triple_press);
         cJSON_AddNumberToObject(obj, "gpio_long_press",   d->gpio_long_press);
+        if (telemetry.has_battery_percent)
+            cJSON_AddNumberToObject(obj, "battery_percent", telemetry.battery_percent);
+        else
+            cJSON_AddNullToObject(obj, "battery_percent");
+        if (telemetry.has_last_button_event)
+            cJSON_AddStringToObject(obj, "last_button_event",
+                                    ble_button_event_str(telemetry.last_button_event));
+        else
+            cJSON_AddNullToObject(obj, "last_button_event");
+        if (telemetry.has_last_seen)
+            cJSON_AddNumberToObject(obj, "last_seen_age_s", telemetry.last_seen_age_s);
+        else
+            cJSON_AddNullToObject(obj, "last_seen_age_s");
+        if (telemetry.has_last_button_event)
+            cJSON_AddNumberToObject(obj, "last_button_event_age_s",
+                                    telemetry.last_button_event_age_s);
+        else
+            cJSON_AddNullToObject(obj, "last_button_event_age_s");
         cJSON_AddItemToArray(arr, obj);
     }
     free(devs);
