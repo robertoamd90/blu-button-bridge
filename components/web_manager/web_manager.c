@@ -1,11 +1,14 @@
 #include <string.h>
 #include <stdlib.h>
 #include "cJSON.h"
+#include "mbedtls/base64.h"
+#include "mbedtls/md.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_system.h"
 #include "esp_ota_ops.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -17,11 +20,154 @@
 #include "ble_access.h"
 
 static const char *TAG = "web_manager";
+static const char *AUTH_NS = "http_auth";
+
+#define AUTH_USER_MAX     32
+#define AUTH_PASS_MAX     64
+#define AUTH_HASH_HEX_LEN 65
 
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
 
+typedef struct {
+    bool enabled;
+    bool password_set;
+    char username[AUTH_USER_MAX + 1];
+    char password_sha256[AUTH_HASH_HEX_LEN];
+} auth_config_t;
+
+typedef esp_err_t (*route_handler_t)(httpd_req_t *req);
+typedef struct {
+    route_handler_t inner;
+    bool            auth_required;
+} route_ctx_t;
+typedef struct {
+    const char     *uri;
+    httpd_method_t  method;
+    route_handler_t handler;
+    bool            auth_required;
+} route_def_t;
+
+static auth_config_t       s_auth_cfg = {0};
+static SemaphoreHandle_t   s_auth_mutex = NULL;
+
+static void auth_load_config(void);
+static bool auth_require(httpd_req_t *req);
+
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
+
+static void bytes_to_hex(const uint8_t *in, size_t len, char *out)
+{
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < len; i++) {
+        out[i * 2]     = hex[(in[i] >> 4) & 0x0F];
+        out[i * 2 + 1] = hex[in[i] & 0x0F];
+    }
+    out[len * 2] = '\0';
+}
+
+static bool sha256_hex(const char *input, char out[AUTH_HASH_HEX_LEN])
+{
+    uint8_t digest[32];
+    if (mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
+                   (const unsigned char *)input, strlen(input), digest) != 0)
+        return false;
+    bytes_to_hex(digest, sizeof(digest), out);
+    return true;
+}
+
+static esp_err_t auth_save_locked(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(AUTH_NS, NVS_READWRITE, &nvs) != ESP_OK) return ESP_FAIL;
+    esp_err_t err = nvs_set_str(nvs, "enabled", s_auth_cfg.enabled ? "1" : "0");
+    if (err == ESP_OK) err = nvs_set_str(nvs, "user", s_auth_cfg.username);
+    if (err == ESP_OK) err = nvs_set_str(nvs, "pass_sha", s_auth_cfg.password_sha256);
+    if (err == ESP_OK) err = nvs_commit(nvs);
+    nvs_close(nvs);
+    return err;
+}
+
+static void auth_load_config(void)
+{
+    memset(&s_auth_cfg, 0, sizeof(s_auth_cfg));
+
+    nvs_handle_t nvs;
+    if (nvs_open(AUTH_NS, NVS_READONLY, &nvs) != ESP_OK) return;
+
+    char enabled[4] = {0};
+    size_t len = sizeof(enabled);
+    if (nvs_get_str(nvs, "enabled", enabled, &len) == ESP_OK)
+        s_auth_cfg.enabled = (enabled[0] == '1');
+
+    len = sizeof(s_auth_cfg.username);
+    nvs_get_str(nvs, "user", s_auth_cfg.username, &len);
+
+    len = sizeof(s_auth_cfg.password_sha256);
+    nvs_get_str(nvs, "pass_sha", s_auth_cfg.password_sha256, &len);
+    s_auth_cfg.password_set = (strlen(s_auth_cfg.password_sha256) == AUTH_HASH_HEX_LEN - 1);
+    nvs_close(nvs);
+}
+
+static bool send_auth_challenge(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"BluButtonBridge\"");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "Authentication required");
+    return false;
+}
+
+static bool auth_require(httpd_req_t *req)
+{
+    auth_config_t cfg = {0};
+    if (s_auth_mutex) xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    cfg = s_auth_cfg;
+    if (s_auth_mutex) xSemaphoreGive(s_auth_mutex);
+
+    if (!cfg.enabled) return true;
+    if (!cfg.password_set || cfg.username[0] == '\0') return send_auth_challenge(req);
+
+    size_t hdr_len = httpd_req_get_hdr_value_len(req, "Authorization");
+    if (hdr_len == 0) return send_auth_challenge(req);
+
+    char header[160];
+    if (hdr_len >= sizeof(header)) return send_auth_challenge(req);
+    if (httpd_req_get_hdr_value_str(req, "Authorization", header, sizeof(header)) != ESP_OK)
+        return send_auth_challenge(req);
+    if (strncmp(header, "Basic ", 6) != 0) return send_auth_challenge(req);
+
+    unsigned char decoded[AUTH_USER_MAX + AUTH_PASS_MAX + 4];
+    size_t decoded_len = 0;
+    if (mbedtls_base64_decode(decoded, sizeof(decoded) - 1, &decoded_len,
+                              (const unsigned char *)(header + 6),
+                              strlen(header + 6)) != 0) {
+        return send_auth_challenge(req);
+    }
+    decoded[decoded_len] = '\0';
+
+    char *sep = strchr((char *)decoded, ':');
+    if (!sep) return send_auth_challenge(req);
+    *sep = '\0';
+    const char *username = (const char *)decoded;
+    const char *password = sep + 1;
+
+    if (strcmp(username, cfg.username) != 0) return send_auth_challenge(req);
+
+    char password_sha256[AUTH_HASH_HEX_LEN];
+    if (!sha256_hex(password, password_sha256)) return send_auth_challenge(req);
+    if (strcmp(password_sha256, cfg.password_sha256) != 0) return send_auth_challenge(req);
+
+    return true;
+}
+
+static esp_err_t handle_with_auth(httpd_req_t *req)
+{
+    route_ctx_t *ctx = (route_ctx_t *)req->user_ctx;
+    if (!ctx || !ctx->inner) return ESP_FAIL;
+    if (ctx->auth_required && !auth_require(req)) return ESP_OK;
+    return ctx->inner(req);
+}
 
 static esp_err_t read_body(httpd_req_t *req, char *buf, size_t buf_len)
 {
@@ -352,6 +498,73 @@ static esp_err_t handle_system_factory_reset(httpd_req_t *req)
 {
     send_json(req, "{\"ok\":true}");
     xTaskCreate(factory_reset_task, "factory_rst", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+// GET /api/system/auth
+static esp_err_t handle_auth_config_get(httpd_req_t *req)
+{
+    auth_config_t cfg = {0};
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    cfg = s_auth_cfg;
+    xSemaphoreGive(s_auth_mutex);
+
+    cJSON *obj = cJSON_CreateObject();
+    cJSON_AddBoolToObject(obj, "enabled", cfg.enabled);
+    cJSON_AddStringToObject(obj, "username", cfg.username);
+    cJSON_AddBoolToObject(obj, "password_set", cfg.password_set);
+    send_cjson(req, obj);
+    return ESP_OK;
+}
+
+// POST /api/system/auth
+static esp_err_t handle_auth_config_set(httpd_req_t *req)
+{
+    char body[256];
+    if (read_body(req, body, sizeof(body)) != ESP_OK)
+        return send_error(req, "body too large");
+
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return send_error(req, "invalid json");
+
+    cJSON *enabled_item = cJSON_GetObjectItem(root, "enabled");
+    cJSON *user_item    = cJSON_GetObjectItem(root, "username");
+    cJSON *pass_item    = cJSON_GetObjectItem(root, "password");
+
+    auth_config_t next = {0};
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    next = s_auth_cfg;
+    xSemaphoreGive(s_auth_mutex);
+
+    if (cJSON_IsBool(enabled_item))
+        next.enabled = cJSON_IsTrue(enabled_item);
+    if (cJSON_IsString(user_item))
+        strlcpy(next.username, user_item->valuestring, sizeof(next.username));
+    if (cJSON_IsString(pass_item)) {
+        if (pass_item->valuestring[0] == '\0') {
+            next.password_sha256[0] = '\0';
+            next.password_set = false;
+        } else if (!sha256_hex(pass_item->valuestring, next.password_sha256)) {
+            cJSON_Delete(root);
+            return send_error(req, "password hashing failed");
+        } else {
+            next.password_set = true;
+        }
+    }
+    cJSON_Delete(root);
+
+    if (next.enabled && next.username[0] == '\0')
+        return send_error(req, "username required when auth is enabled");
+    if (next.enabled && !next.password_set)
+        return send_error(req, "password required when auth is enabled");
+
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    s_auth_cfg = next;
+    esp_err_t err = auth_save_locked();
+    xSemaphoreGive(s_auth_mutex);
+    if (err != ESP_OK) return send_error(req, "could not save auth config");
+
+    send_json(req, "{\"ok\":true}");
     return ESP_OK;
 }
 
@@ -1278,9 +1491,16 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
 
 void web_manager_init(void)
 {
+    s_auth_mutex = xSemaphoreCreateMutex();
+    if (!s_auth_mutex) {
+        ESP_LOGE(TAG, "Failed to allocate auth mutex");
+        return;
+    }
+    auth_load_config();
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size        = 10240;
-    config.max_uri_handlers  = 40;
+    config.max_uri_handlers  = 44;
     config.max_open_sockets  = 4;
     config.lru_purge_enable  = true;
     config.uri_match_fn      = httpd_uri_match_wildcard;
@@ -1291,50 +1511,60 @@ void web_manager_init(void)
         return;
     }
 
-    const httpd_uri_t uris[] = {
-        { .uri = "/",                         .method = HTTP_GET,    .handler = handle_root                },
-        { .uri = "/api/status",               .method = HTTP_GET,    .handler = handle_status              },
-        { .uri = "/api/wifi/config",          .method = HTTP_GET,    .handler = handle_wifi_config_get     },
-        { .uri = "/api/wifi/scan",            .method = HTTP_GET,    .handler = handle_wifi_scan           },
-        { .uri = "/api/wifi/connect",         .method = HTTP_POST,   .handler = handle_wifi_connect        },
-        { .uri = "/api/wifi",                 .method = HTTP_DELETE, .handler = handle_wifi_delete         },
-        { .uri = "/api/mqtt/config",          .method = HTTP_GET,    .handler = handle_mqtt_config_get     },
-        { .uri = "/api/mqtt/connect",         .method = HTTP_POST,   .handler = handle_mqtt_connect        },
-        { .uri = "/api/mqtt/actions",         .method = HTTP_GET,    .handler = handle_mqtt_actions_get    },
-        { .uri = "/api/mqtt/actions",         .method = HTTP_POST,   .handler = handle_mqtt_action_add     },
-        { .uri = "/api/mqtt/action",          .method = HTTP_PUT,    .handler = handle_mqtt_action_update  },
-        { .uri = "/api/mqtt/action",          .method = HTTP_DELETE, .handler = handle_mqtt_action_delete  },
-        { .uri = "/api/mqtt/action/test",     .method = HTTP_POST,   .handler = handle_mqtt_action_test    },
-        { .uri = "/api/mqtt",                 .method = HTTP_DELETE, .handler = handle_mqtt_delete         },
-        { .uri = "/api/gpio/actions",         .method = HTTP_GET,    .handler = handle_gpio_actions_get    },
-        { .uri = "/api/gpio/pins",            .method = HTTP_GET,    .handler = handle_gpio_pins_get       },
-        { .uri = "/api/gpio/actions",         .method = HTTP_POST,   .handler = handle_gpio_action_add     },
-        { .uri = "/api/gpio/action",          .method = HTTP_PUT,    .handler = handle_gpio_action_update  },
-        { .uri = "/api/gpio/action",          .method = HTTP_DELETE, .handler = handle_gpio_action_delete  },
-        { .uri = "/api/gpio/action/test",     .method = HTTP_POST,   .handler = handle_gpio_action_test    },
-        { .uri = "/api/ap/start",             .method = HTTP_POST,   .handler = handle_ap_start            },
-        { .uri = "/api/ap/stop",              .method = HTTP_POST,   .handler = handle_ap_stop             },
-        { .uri = "/api/ap/config",            .method = HTTP_GET,    .handler = handle_ap_config_get       },
-        { .uri = "/api/ap/config",            .method = HTTP_POST,   .handler = handle_ap_config_set       },
-        { .uri = "/api/system/reboot",        .method = HTTP_POST,   .handler = handle_system_reboot         },
-        { .uri = "/api/system/factory-reset", .method = HTTP_POST,   .handler = handle_system_factory_reset  },
-        { .uri = "/api/system/ota",           .method = HTTP_POST,   .handler = handle_ota_upload             },
-        { .uri = "/api/system/config",        .method = HTTP_GET,    .handler = handle_config_download        },
-        { .uri = "/api/system/config",        .method = HTTP_POST,   .handler = handle_config_restore         },
-        { .uri = "/api/ble/devices",           .method = HTTP_GET,    .handler = handle_ble_devices           },
-        { .uri = "/api/ble/register/status",   .method = HTTP_GET,    .handler = handle_ble_reg_status        },
-        { .uri = "/api/ble/register/start",    .method = HTTP_POST,   .handler = handle_ble_reg_start         },
-        { .uri = "/api/ble/register/cancel",   .method = HTTP_POST,   .handler = handle_ble_reg_cancel        },
-        { .uri = "/api/ble/register/confirm",  .method = HTTP_POST,   .handler = handle_ble_reg_confirm       },
-        { .uri = "/api/ble/device",            .method = HTTP_PATCH,  .handler = handle_ble_device_update     },
-        { .uri = "/api/ble/device/reimport",   .method = HTTP_POST,   .handler = handle_ble_device_reimport   },
-        { .uri = "/api/ble/device",            .method = HTTP_DELETE, .handler = handle_ble_device_delete     },
-        // Catch-all: must be registered LAST
-        { .uri = "/*",                         .method = HTTP_GET,    .handler = handle_captive               },
+    static route_ctx_t route_ctxs[40];
+    const route_def_t routes[] = {
+        { .uri = "/",                         .method = HTTP_GET,    .handler = handle_root,                .auth_required = true },
+        { .uri = "/api/status",               .method = HTTP_GET,    .handler = handle_status,              .auth_required = true },
+        { .uri = "/api/wifi/config",          .method = HTTP_GET,    .handler = handle_wifi_config_get,     .auth_required = true },
+        { .uri = "/api/wifi/scan",            .method = HTTP_GET,    .handler = handle_wifi_scan,           .auth_required = true },
+        { .uri = "/api/wifi/connect",         .method = HTTP_POST,   .handler = handle_wifi_connect,        .auth_required = true },
+        { .uri = "/api/wifi",                 .method = HTTP_DELETE, .handler = handle_wifi_delete,         .auth_required = true },
+        { .uri = "/api/mqtt/config",          .method = HTTP_GET,    .handler = handle_mqtt_config_get,     .auth_required = true },
+        { .uri = "/api/mqtt/connect",         .method = HTTP_POST,   .handler = handle_mqtt_connect,        .auth_required = true },
+        { .uri = "/api/mqtt/actions",         .method = HTTP_GET,    .handler = handle_mqtt_actions_get,    .auth_required = true },
+        { .uri = "/api/mqtt/actions",         .method = HTTP_POST,   .handler = handle_mqtt_action_add,     .auth_required = true },
+        { .uri = "/api/mqtt/action",          .method = HTTP_PUT,    .handler = handle_mqtt_action_update,  .auth_required = true },
+        { .uri = "/api/mqtt/action",          .method = HTTP_DELETE, .handler = handle_mqtt_action_delete,  .auth_required = true },
+        { .uri = "/api/mqtt/action/test",     .method = HTTP_POST,   .handler = handle_mqtt_action_test,    .auth_required = true },
+        { .uri = "/api/mqtt",                 .method = HTTP_DELETE, .handler = handle_mqtt_delete,         .auth_required = true },
+        { .uri = "/api/gpio/actions",         .method = HTTP_GET,    .handler = handle_gpio_actions_get,    .auth_required = true },
+        { .uri = "/api/gpio/pins",            .method = HTTP_GET,    .handler = handle_gpio_pins_get,       .auth_required = true },
+        { .uri = "/api/gpio/actions",         .method = HTTP_POST,   .handler = handle_gpio_action_add,     .auth_required = true },
+        { .uri = "/api/gpio/action",          .method = HTTP_PUT,    .handler = handle_gpio_action_update,  .auth_required = true },
+        { .uri = "/api/gpio/action",          .method = HTTP_DELETE, .handler = handle_gpio_action_delete,  .auth_required = true },
+        { .uri = "/api/gpio/action/test",     .method = HTTP_POST,   .handler = handle_gpio_action_test,    .auth_required = true },
+        { .uri = "/api/ap/start",             .method = HTTP_POST,   .handler = handle_ap_start,            .auth_required = true },
+        { .uri = "/api/ap/stop",              .method = HTTP_POST,   .handler = handle_ap_stop,             .auth_required = true },
+        { .uri = "/api/ap/config",            .method = HTTP_GET,    .handler = handle_ap_config_get,       .auth_required = true },
+        { .uri = "/api/ap/config",            .method = HTTP_POST,   .handler = handle_ap_config_set,       .auth_required = true },
+        { .uri = "/api/system/reboot",        .method = HTTP_POST,   .handler = handle_system_reboot,       .auth_required = true },
+        { .uri = "/api/system/factory-reset", .method = HTTP_POST,   .handler = handle_system_factory_reset,.auth_required = true },
+        { .uri = "/api/system/auth",          .method = HTTP_GET,    .handler = handle_auth_config_get,     .auth_required = true },
+        { .uri = "/api/system/auth",          .method = HTTP_POST,   .handler = handle_auth_config_set,     .auth_required = true },
+        { .uri = "/api/system/ota",           .method = HTTP_POST,   .handler = handle_ota_upload,          .auth_required = true },
+        { .uri = "/api/system/config",        .method = HTTP_GET,    .handler = handle_config_download,     .auth_required = true },
+        { .uri = "/api/system/config",        .method = HTTP_POST,   .handler = handle_config_restore,      .auth_required = true },
+        { .uri = "/api/ble/devices",          .method = HTTP_GET,    .handler = handle_ble_devices,         .auth_required = true },
+        { .uri = "/api/ble/register/status",  .method = HTTP_GET,    .handler = handle_ble_reg_status,      .auth_required = true },
+        { .uri = "/api/ble/register/start",   .method = HTTP_POST,   .handler = handle_ble_reg_start,       .auth_required = true },
+        { .uri = "/api/ble/register/cancel",  .method = HTTP_POST,   .handler = handle_ble_reg_cancel,      .auth_required = true },
+        { .uri = "/api/ble/register/confirm", .method = HTTP_POST,   .handler = handle_ble_reg_confirm,     .auth_required = true },
+        { .uri = "/api/ble/device",           .method = HTTP_PATCH,  .handler = handle_ble_device_update,   .auth_required = true },
+        { .uri = "/api/ble/device/reimport",  .method = HTTP_POST,   .handler = handle_ble_device_reimport, .auth_required = true },
+        { .uri = "/api/ble/device",           .method = HTTP_DELETE, .handler = handle_ble_device_delete,   .auth_required = true },
+        { .uri = "/*",                        .method = HTTP_GET,    .handler = handle_captive,             .auth_required = true },
     };
 
-    for (int i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
-        httpd_register_uri_handler(server, &uris[i]);
+    for (int i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
+        route_ctxs[i].inner = routes[i].handler;
+        route_ctxs[i].auth_required = routes[i].auth_required;
+        httpd_uri_t uri = {
+            .uri = routes[i].uri,
+            .method = routes[i].method,
+            .handler = handle_with_auth,
+            .user_ctx = &route_ctxs[i],
+        };
+        httpd_register_uri_handler(server, &uri);
     }
 
     ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
