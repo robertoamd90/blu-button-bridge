@@ -25,7 +25,6 @@
 static const char *TAG = "web_manager";
 static const char *GITHUB_RELEASE_URL = "https://api.github.com/repos/robertoamd90/blu-button-bridge/releases/latest";
 static const char *GITHUB_ASSET_NAME  = "BluButtonBridge.bin";
-static const int GITHUB_JSON_CAP      = 32768;
 
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
@@ -86,7 +85,7 @@ typedef struct {
     char *buf;
     size_t len;
     size_t cap;
-    bool truncated;
+    bool alloc_failed;
 } http_buffer_t;
 
 typedef struct {
@@ -190,14 +189,21 @@ static esp_err_t http_buffer_event_handler(esp_http_client_event_t *evt)
     if (!buffer) return ESP_OK;
 
     if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data_len > 0) {
-        size_t remaining = (buffer->cap > buffer->len) ? (buffer->cap - buffer->len - 1) : 0;
-        size_t copy_len = (evt->data_len <= remaining) ? evt->data_len : remaining;
-        if (copy_len > 0) {
-            memcpy(buffer->buf + buffer->len, evt->data, copy_len);
-            buffer->len += copy_len;
-            buffer->buf[buffer->len] = '\0';
+        size_t needed = buffer->len + (size_t)evt->data_len + 1;
+        if (needed > buffer->cap) {
+            size_t new_cap = (buffer->cap > 0) ? buffer->cap : 4096;
+            while (new_cap < needed) new_cap *= 2;
+            char *new_buf = realloc(buffer->buf, new_cap);
+            if (!new_buf) {
+                buffer->alloc_failed = true;
+                return ESP_ERR_NO_MEM;
+            }
+            buffer->buf = new_buf;
+            buffer->cap = new_cap;
         }
-        if ((size_t)evt->data_len > copy_len) buffer->truncated = true;
+        memcpy(buffer->buf + buffer->len, evt->data, evt->data_len);
+        buffer->len += (size_t)evt->data_len;
+        buffer->buf[buffer->len] = '\0';
     }
 
     return ESP_OK;
@@ -211,10 +217,7 @@ static esp_err_t ota_download_event_handler(esp_http_client_event_t *evt)
     if (evt->event_id != HTTP_EVENT_ON_DATA || evt->data_len <= 0) return ESP_OK;
 
     int status = esp_http_client_get_status_code(evt->client);
-    if (status != 200) {
-        ctx->stream_err = ESP_FAIL;
-        return ESP_FAIL;
-    }
+    if (status != 200) return ESP_OK;
 
     if (!ctx->sha_started) {
         const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
@@ -254,11 +257,13 @@ static void sha256_hex(const unsigned char digest[32], char *out_hex, size_t out
 
 static esp_err_t github_http_get_json(const char *url, http_buffer_t *buffer)
 {
-    if (!url || !buffer || !buffer->buf || buffer->cap == 0) return ESP_ERR_INVALID_ARG;
+    if (!url || !buffer) return ESP_ERR_INVALID_ARG;
 
+    free(buffer->buf);
+    buffer->buf = NULL;
     buffer->len = 0;
-    buffer->buf[0] = '\0';
-    buffer->truncated = false;
+    buffer->cap = 0;
+    buffer->alloc_failed = false;
 
     esp_http_client_config_t cfg = {
         .url = url,
@@ -282,7 +287,8 @@ static esp_err_t github_http_get_json(const char *url, http_buffer_t *buffer)
 
     if (err != ESP_OK) return err;
     if (status != 200) return ESP_FAIL;
-    if (buffer->truncated) return ESP_ERR_NO_MEM;
+    if (buffer->alloc_failed) return ESP_ERR_NO_MEM;
+    if (!buffer->buf || buffer->len == 0) return ESP_FAIL;
     return ESP_OK;
 }
 
@@ -291,22 +297,16 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
     if (!info) return ESP_ERR_INVALID_ARG;
     memset(info, 0, sizeof(*info));
 
-    char *json = malloc(GITHUB_JSON_CAP);
-    if (!json) return ESP_ERR_NO_MEM;
-
-    http_buffer_t buffer = {
-        .buf = json,
-        .cap = GITHUB_JSON_CAP,
-    };
+    http_buffer_t buffer = {0};
 
     esp_err_t err = github_http_get_json(GITHUB_RELEASE_URL, &buffer);
     if (err != ESP_OK) {
-        free(json);
+        free(buffer.buf);
         return err;
     }
 
     cJSON *root = cJSON_Parse(buffer.buf);
-    free(json);
+    free(buffer.buf);
     if (!root) return ESP_FAIL;
 
     cJSON *tag = cJSON_GetObjectItem(root, "tag_name");
