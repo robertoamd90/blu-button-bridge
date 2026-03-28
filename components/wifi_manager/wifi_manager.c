@@ -159,7 +159,8 @@ static void wifi_connect(const char *ssid, const char *pass)
     wifi_config_t cfg = {};
     cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-    strlcpy((char *)cfg.sta.ssid,     ssid, sizeof(cfg.sta.ssid));
+    size_t ssid_len = strnlen(ssid, sizeof(cfg.sta.ssid));
+    memcpy(cfg.sta.ssid, ssid, ssid_len);
     strlcpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password));
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
     esp_wifi_connect();
@@ -379,8 +380,9 @@ void wifi_start_ap(void)
     update_system_led_status();
 
     wifi_config_t ap_cfg = { 0 };
-    strlcpy((char *)ap_cfg.ap.ssid, s_ap_cfg.ssid, sizeof(ap_cfg.ap.ssid));
-    ap_cfg.ap.ssid_len      = (uint8_t)strlen(s_ap_cfg.ssid);
+    size_t ap_ssid_len = strnlen(s_ap_cfg.ssid, sizeof(ap_cfg.ap.ssid));
+    memcpy(ap_cfg.ap.ssid, s_ap_cfg.ssid, ap_ssid_len);
+    ap_cfg.ap.ssid_len      = (uint8_t)ap_ssid_len;
     ap_cfg.ap.channel       = 1;
     ap_cfg.ap.max_connection = 4;
     if (strlen(s_ap_cfg.password) >= 8) {
