@@ -76,13 +76,14 @@ static bool sha256_hex(const char *input, char out[AUTH_HASH_HEX_LEN])
     return true;
 }
 
-static esp_err_t auth_save_locked(void)
+static esp_err_t auth_save_config_locked(const auth_config_t *cfg)
 {
+    if (!cfg) return ESP_ERR_INVALID_ARG;
     nvs_handle_t nvs;
     if (nvs_open(AUTH_NS, NVS_READWRITE, &nvs) != ESP_OK) return ESP_FAIL;
-    esp_err_t err = nvs_set_str(nvs, "enabled", s_auth_cfg.enabled ? "1" : "0");
-    if (err == ESP_OK) err = nvs_set_str(nvs, "user", s_auth_cfg.username);
-    if (err == ESP_OK) err = nvs_set_str(nvs, "pass_sha", s_auth_cfg.password_sha256);
+    esp_err_t err = nvs_set_str(nvs, "enabled", cfg->enabled ? "1" : "0");
+    if (err == ESP_OK) err = nvs_set_str(nvs, "user", cfg->username);
+    if (err == ESP_OK) err = nvs_set_str(nvs, "pass_sha", cfg->password_sha256);
     if (err == ESP_OK) err = nvs_commit(nvs);
     nvs_close(nvs);
     return err;
@@ -579,8 +580,8 @@ static esp_err_t handle_auth_config_set(httpd_req_t *req)
         return send_error(req, "password required when auth is enabled");
 
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-    s_auth_cfg = next;
-    esp_err_t err = auth_save_locked();
+    esp_err_t err = auth_save_config_locked(&next);
+    if (err == ESP_OK) s_auth_cfg = next;
     xSemaphoreGive(s_auth_mutex);
     if (err != ESP_OK) return send_error(req, "could not save auth config");
 
