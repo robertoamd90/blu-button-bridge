@@ -72,7 +72,6 @@ static void reconnect_timer_cb(TimerHandle_t t)
 {
     (void)t;
     if (s_status == WIFI_STATUS_CONNECTING) {
-        esp_wifi_disconnect();   // cancel any stuck attempt
         esp_wifi_connect();
     }
 }
@@ -151,7 +150,6 @@ static void wifi_connect(const char *ssid, const char *pass)
     strncpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password));
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
     esp_wifi_connect();
-    xTimerReset(s_reconnect_timer, 0);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
