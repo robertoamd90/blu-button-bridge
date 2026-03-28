@@ -78,6 +78,7 @@ typedef struct {
     int major;
     int minor;
     int patch;
+    bool prerelease;
     bool valid;
 } semver_t;
 
@@ -145,20 +146,24 @@ static bool parse_semver(const char *value, semver_t *out)
     out->major = (int)major;
     out->minor = (int)minor;
     out->patch = (int)patch;
+    out->prerelease = (*end == '-');
     out->valid = true;
     return true;
 }
 
-static int compare_semver(const char *a, const char *b)
+static int compare_versions_for_update(const char *candidate, const char *current)
 {
-    semver_t va = {0}, vb = {0};
-    bool a_ok = parse_semver(a, &va);
-    bool b_ok = parse_semver(b, &vb);
-    if (!a_ok || !b_ok) return 0;
+    semver_t candidate_v = {0}, current_v = {0};
+    bool candidate_ok = parse_semver(candidate, &candidate_v);
+    bool current_ok = parse_semver(current, &current_v);
 
-    if (va.major != vb.major) return (va.major > vb.major) ? 1 : -1;
-    if (va.minor != vb.minor) return (va.minor > vb.minor) ? 1 : -1;
-    if (va.patch != vb.patch) return (va.patch > vb.patch) ? 1 : -1;
+    if (!candidate_ok) return 0;
+    if (!current_ok) return 1;
+
+    if (candidate_v.major != current_v.major) return (candidate_v.major > current_v.major) ? 1 : -1;
+    if (candidate_v.minor != current_v.minor) return (candidate_v.minor > current_v.minor) ? 1 : -1;
+    if (candidate_v.patch != current_v.patch) return (candidate_v.patch > current_v.patch) ? 1 : -1;
+    if (candidate_v.prerelease != current_v.prerelease) return candidate_v.prerelease ? -1 : 1;
     return 0;
 }
 
@@ -1299,7 +1304,7 @@ static esp_err_t handle_update_check(httpd_req_t *req)
     cJSON_AddBoolToObject(obj, "ok", true);
     cJSON_AddStringToObject(obj, "current_version", current_version);
     cJSON_AddStringToObject(obj, "latest_version", release.version_label);
-    cJSON_AddBoolToObject(obj, "update_available", compare_semver(release.tag, app->version) > 0);
+    cJSON_AddBoolToObject(obj, "update_available", compare_versions_for_update(release.tag, app->version) > 0);
     cJSON_AddStringToObject(obj, "release_url", release.html_url);
     cJSON_AddStringToObject(obj, "asset_name", GITHUB_ASSET_NAME);
     cJSON_AddNumberToObject(obj, "asset_size", release.asset_size);
@@ -1373,7 +1378,7 @@ static esp_err_t handle_update_install(httpd_req_t *req)
         return send_error(req, "could not fetch latest GitHub release");
     }
 
-    if (compare_semver(release.tag, app->version) <= 0) {
+    if (compare_versions_for_update(release.tag, app->version) <= 0) {
         ota_unlock();
         return send_error(req, "no newer GitHub release is available");
     }
