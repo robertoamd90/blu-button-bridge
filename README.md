@@ -24,12 +24,12 @@ Press a Shelly button → the ESP32 receives the encrypted BLE advertisement, de
 
 | Area | Highlights |
 |------|-----------|
-| **BLE** | Passive scan for BTHome v2 encrypted devices (Shelly BLU Button); AES-128-CCM decryption via PSA crypto; anti-replay counter; up to 8 devices; 4 event types (single / double / triple / long press) |
+| **BLE** | Passive scan for BTHome v2 encrypted devices (Shelly BLU Button); AES-128-CCM decryption via PSA crypto; anti-replay counter; up to 8 devices; 4 event types (single / double / triple / long press); per-device telemetry in the UI (last seen, last event, battery when available) |
 | **MQTT** | Configurable broker (host, port, user/pass, optional TLS); up to 16 named publish actions (topic + payload); QoS 1; auto-reconnect |
 | **GPIO** | Up to 16 output actions; configurable pin, idle state, active level, action type (set on / set off / toggle), auto-restore delay |
 | **WiFi** | STA + SoftAP coexistence; captive-portal DNS for first-time setup; auto-reconnect (5 s retry); WPA2-PSK on AP |
-| **Web UI** | Single-page app served from the ESP32; tabs for WiFi, MQTT, GPIO, BLE, System; real-time status bar; mobile-friendly |
-| **System** | OTA firmware update via file upload; full config backup/restore (JSON); reboot and factory-reset from the UI; NVS persistence across reboots |
+| **Web UI** | Single-page app served from the ESP32; tabs for WiFi, MQTT, GPIO, BLE, System; real-time status bar; mobile-friendly; optional browser-native HTTP Basic Auth |
+| **System** | OTA firmware update via file upload or manual GitHub release check/install with SHA-256 verification; full config backup/restore (JSON, including Basic Auth settings stored as password hash); reboot and factory-reset from the UI; NVS persistence across reboots |
 
 ---
 
@@ -119,6 +119,7 @@ blu-button-bridge/
 | `mqtt` | Broker host, port, credentials, TLS flag, publish actions |
 | `ble_access` | Registered devices (MAC, key, label, event masks, counter) |
 | `gpio` | GPIO output actions |
+| `http_auth` | Optional HTTP Basic Auth config |
 
 ---
 
@@ -168,6 +169,16 @@ Without encryption enabled, the button sends unencrypted BTHome advertisements w
 2. Press the Shelly button; the pending MAC appears
 3. Enter the 32-hex-char AES key (copied from the Shelly app), a label, and assign MQTT/GPIO actions per event
 4. **Save** — the device is stored in NVS and active immediately
+
+### Runtime telemetry in the UI
+
+The BLE tab also exposes lightweight runtime telemetry for each registered Shelly BLU Button:
+
+- **Last seen** — when the ESP32 last received a valid advertisement from that device
+- **Last event** — the latest documented button event observed for that device
+- **Battery %** — when the device includes the BTHome battery field
+
+This telemetry is runtime-only and is not persisted across reboot.
 
 ### Button events
 
@@ -248,7 +259,7 @@ Served directly from the ESP32 on port 80 — no external dependencies.
 | **MQTT** | Configure broker, manage publish actions (add / edit / delete / test) |
 | **GPIO** | Manage GPIO output actions (add / edit / delete / test), pin validation |
 | **BLE** | List devices, register new devices, assign events to actions, manage keys |
-| **System** | OTA firmware update, config backup & restore, reboot, factory reset |
+| **System** | GitHub/manual OTA update, optional Basic Auth config, config backup & restore, reboot, factory reset |
 
 ### Status bar
 
@@ -308,11 +319,10 @@ All endpoints are served on port 80 with JSON payloads.
 |--------|----------|-------------|
 | GET | `/api/ble/devices` | List registered devices |
 | POST | `/api/ble/register/start` | Enter registration mode |
-| GET | `/api/ble/register/poll` | Poll for pending MAC |
-| POST | `/api/ble/register/confirm` | Confirm registration `{mac, key, label}` |
+| GET | `/api/ble/register/status` | Get registration state / pending MAC |
+| POST | `/api/ble/register/confirm` | Confirm registration `{mac, key, label, ...action bitmasks}` |
 | POST | `/api/ble/register/cancel` | Cancel registration |
-| PUT | `/api/ble/device` | Update device settings |
-| POST | `/api/ble/device/key` | Update encryption key `{mac, key}` |
+| PATCH | `/api/ble/device` | Update device settings |
 | POST | `/api/ble/device/reimport` | Re-import key into PSA |
 | DELETE | `/api/ble/device` | Delete device `{mac}` |
 
@@ -321,8 +331,12 @@ All endpoints are served on port 80 with JSON payloads.
 |--------|----------|-------------|
 | POST | `/api/system/reboot` | Restart the ESP32 |
 | POST | `/api/system/factory-reset` | Erase all NVS and restart |
-| POST | `/api/system/ota` | Upload firmware binary (OTA update) |
-| GET | `/api/system/config` | Download full configuration (JSON) |
+| GET | `/api/system/auth` | Read Basic Auth status / username |
+| POST | `/api/system/auth` | Save Basic Auth settings `{enabled, username, password}` |
+| GET | `/api/system/update/check` | Check latest public GitHub release |
+| POST | `/api/system/update` | Download, verify, and install latest GitHub release |
+| POST | `/api/system/ota` | Upload firmware binary manually (OTA update) |
+| GET | `/api/system/config` | Download full configuration (JSON, including Basic Auth hash) |
 | POST | `/api/system/config` | Restore configuration from JSON and reboot |
 
 ---
@@ -377,6 +391,7 @@ If flash hangs on `Connecting...`, hold the **BOOT** button on the ESP32 until i
 | Port busy | Monitor open elsewhere | Close monitor with Ctrl+T Ctrl+X |
 | Build fails after fullclean | Target not set | `idf.py set-target esp32` then build |
 | Can't connect to AP WiFi | BLE scan running | AP stops BLE scan automatically; if issue persists, reboot |
+| GitHub OTA fails with TLS / download errors | Device has no internet access or release asset metadata is missing | Confirm STA connectivity, public GitHub access, and that the latest release includes `BluButtonBridge.bin` with a GitHub-provided SHA-256 digest |
 | BLE device not decrypting | Wrong key or key out of sync | Check key in Shelly app; re-register or update key via UI |
 | `event=0` in BLE log | Normal button release beacon | No action expected — this is idle/release state |
 | WiFi stays in ERROR | Connection failed, no retry | Fixed in firmware; should auto-retry every 5 s |

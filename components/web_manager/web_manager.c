@@ -176,6 +176,17 @@ static bool auth_username_is_valid(const char *username)
     return username && strchr(username, ':') == NULL;
 }
 
+static bool auth_password_hash_copy(const char *input, char out[AUTH_HASH_HEX_LEN])
+{
+    if (!input || !out || strlen(input) != AUTH_HASH_HEX_LEN - 1) return false;
+    for (size_t i = 0; i < AUTH_HASH_HEX_LEN - 1; i++) {
+        if (!isxdigit((unsigned char)input[i])) return false;
+        out[i] = (char)tolower((unsigned char)input[i]);
+    }
+    out[AUTH_HASH_HEX_LEN - 1] = '\0';
+    return true;
+}
+
 static esp_err_t handle_with_auth(httpd_req_t *req)
 {
     route_ctx_t *ctx = (route_ctx_t *)req->user_ctx;
@@ -1665,7 +1676,7 @@ static uint16_t json_u16(cJSON *obj, const char *key)
 static esp_err_t handle_config_download(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "version", 1);
+    cJSON_AddNumberToObject(root, "version", 2);
 
     // WiFi STA
     cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
@@ -1691,6 +1702,19 @@ static esp_err_t handle_config_download(httpd_req_t *req)
         cJSON_AddBoolToObject(ap, "enabled", cfg.enabled);
         cJSON_AddStringToObject(ap, "ssid", cfg.ssid);
         cJSON_AddStringToObject(ap, "password", cfg.password);
+    }
+
+    // HTTP Basic Auth
+    cJSON *auth = cJSON_AddObjectToObject(root, "auth");
+    {
+        auth_config_t cfg = {0};
+        if (s_auth_mutex) xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+        cfg = s_auth_cfg;
+        if (s_auth_mutex) xSemaphoreGive(s_auth_mutex);
+        cJSON_AddBoolToObject(auth, "enabled", cfg.enabled);
+        cJSON_AddStringToObject(auth, "username", cfg.username);
+        cJSON_AddBoolToObject(auth, "password_set", cfg.password_set);
+        cJSON_AddStringToObject(auth, "password_sha256", cfg.password_sha256);
     }
 
     // MQTT broker
@@ -1832,6 +1856,61 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
         if (cJSON_IsString(s)) strlcpy(cfg.ssid, s->valuestring, sizeof(cfg.ssid));
         if (cJSON_IsString(p)) strlcpy(cfg.password, p->valuestring, sizeof(cfg.password));
         wifi_ap_save_config(&cfg);
+    }
+
+    // HTTP Basic Auth
+    cJSON *auth = cJSON_GetObjectItem(root, "auth");
+    if (auth) {
+        auth_config_t next = {0};
+        xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+        next = s_auth_cfg;
+        xSemaphoreGive(s_auth_mutex);
+
+        cJSON *en = cJSON_GetObjectItem(auth, "enabled");
+        cJSON *u  = cJSON_GetObjectItem(auth, "username");
+        cJSON *ps = cJSON_GetObjectItem(auth, "password_set");
+        cJSON *ph = cJSON_GetObjectItem(auth, "password_sha256");
+
+        if (cJSON_IsBool(en)) next.enabled = cJSON_IsTrue(en);
+        if (cJSON_IsString(u)) {
+            if (strlen(u->valuestring) > AUTH_USER_MAX || !auth_username_is_valid(u->valuestring)) {
+                cJSON_Delete(root);
+                return send_error(req, "invalid auth username in backup");
+            }
+            strlcpy(next.username, u->valuestring, sizeof(next.username));
+        }
+        if (cJSON_IsString(ph)) {
+            if (ph->valuestring[0] == '\0') {
+                next.password_sha256[0] = '\0';
+                next.password_set = false;
+            } else if (!auth_password_hash_copy(ph->valuestring, next.password_sha256)) {
+                cJSON_Delete(root);
+                return send_error(req, "invalid auth password hash in backup");
+            } else {
+                next.password_set = true;
+            }
+        } else if (cJSON_IsBool(ps) && !cJSON_IsTrue(ps)) {
+            next.password_sha256[0] = '\0';
+            next.password_set = false;
+        }
+
+        if (next.enabled && next.username[0] == '\0') {
+            cJSON_Delete(root);
+            return send_error(req, "backup enables auth without a username");
+        }
+        if (next.enabled && !next.password_set) {
+            cJSON_Delete(root);
+            return send_error(req, "backup enables auth without a password hash");
+        }
+
+        xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+        esp_err_t err = auth_save_config_locked(&next);
+        if (err == ESP_OK) s_auth_cfg = next;
+        xSemaphoreGive(s_auth_mutex);
+        if (err != ESP_OK) {
+            cJSON_Delete(root);
+            return send_error(req, "could not restore auth config");
+        }
     }
 
     // MQTT broker
