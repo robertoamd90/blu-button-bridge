@@ -3,6 +3,7 @@
 #include "cJSON.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_err.h"
 #include "esp_system.h"
 #include "esp_ota_ops.h"
 #include "freertos/FreeRTOS.h"
@@ -340,7 +341,11 @@ static void reboot_task(void *arg)
 static void factory_reset_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS(300));
-    nvs_flash_erase(); // wipes all NVS: WiFi, MQTT, AP config, BLE
+    esp_err_t err = nvs_flash_erase(); // wipes all NVS: WiFi, MQTT, AP config, BLE
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset failed: %s", esp_err_to_name(err));
+        vTaskDelete(NULL);
+    }
     esp_restart();
 }
 

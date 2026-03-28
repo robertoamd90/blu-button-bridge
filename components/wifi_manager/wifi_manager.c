@@ -5,6 +5,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/timers.h"
 #include "nvs.h"
+#include "esp_err.h"
 #include "esp_event.h"
 #include "esp_wifi.h"
 #include "wifi_manager.h"
@@ -250,21 +251,22 @@ void wifi_clean_credentials(void)
 void wifi_init(void)
 {
     // Stack init
-    esp_netif_init();
-    esp_event_loop_create_default();
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_sta_netif = esp_netif_create_default_wifi_sta();
-    esp_netif_create_default_wifi_ap();
+    ESP_ERROR_CHECK(s_sta_netif ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(esp_netif_create_default_wifi_ap() ? ESP_OK : ESP_ERR_NO_MEM);
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     set_device_hostname();
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_ps(WIFI_PS_NONE);
-    esp_wifi_start();
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    ESP_ERROR_CHECK(esp_wifi_start());
 
     wifi_events = xEventGroupCreate();
     s_reconnect_timer = xTimerCreate("wifi_rc", pdMS_TO_TICKS(5000), pdFALSE, NULL, reconnect_timer_cb);
-    esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP,        on_wifi_got_ip,        NULL);
-    esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_wifi_disconnected,  NULL);
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP,        on_wifi_got_ip,       NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_wifi_disconnected, NULL));
     gpio_manager_set_boot_ap_callback(wifi_start_ap);
     mqtt_set_status_callback(on_mqtt_status_changed);
 

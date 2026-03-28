@@ -382,7 +382,9 @@ esp_err_t mqtt_action_trigger(int idx)
     action = s_actions[idx];
     xSemaphoreGive(s_actions_mutex);
 
-    mqtt_publish(action.topic, action.payload);
+    if (mqtt_publish(action.topic, action.payload) < 0) {
+        ESP_LOGW(TAG, "action '%s': publish failed", action.name);
+    }
     return ESP_OK;
 }
 
