@@ -114,14 +114,13 @@
       with automatic captive portal.<br>
       <strong>Note:</strong> BLE scanning is paused while the AP is active.
     </p>
-    <div class="row" style="margin-bottom:0">
+    <div style="font-size:.82rem;font-weight:700;margin-bottom:.35rem">Runtime control</div>
+    <div class="row" style="margin-bottom:.9rem">
       <button class="btn btn-primary" onclick="apStart()">Start AP</button>
       <button class="btn btn-danger"  onclick="apStop()">Stop AP</button>
     </div>
-    <div id="toast-ap" class="toast"></div>
-  </div>
-  <div class="card">
-    <h2>AP Settings</h2>
+    <div style="height:1px;background:#ececec;margin:.9rem 0"></div>
+    <div style="font-size:.82rem;font-weight:700;margin-bottom:.35rem">Settings</div>
     <div class="check-row">
       <input type="checkbox" id="ap-enabled">
       <label for="ap-enabled">Always on <small>(disable auto-management)</small></label>
@@ -131,7 +130,7 @@
     <label>Password <small>(min 8 chars — empty = open network)</small></label>
     <input id="ap-pass" type="text" maxlength="63" placeholder="(empty = open network)">
     <button class="btn btn-primary" onclick="apSaveConfig()">Save</button>
-    <div id="toast-ap-cfg" class="toast"></div>
+    <div id="toast-ap" class="toast"></div>
   </div>
 </div>
 
@@ -295,24 +294,21 @@
 <!-- System -->
 <div id="tab-system" class="tab">
   <div class="card">
-    <h2>GitHub Updates</h2>
+    <h2>Firmware Update (OTA)</h2>
     <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
-      Check the latest public GitHub release and install it after SHA-256 verification.
+      Install the latest public GitHub release after SHA-256 verification, or upload a firmware binary manually. The device will reboot after a successful update.
     </p>
+    <div style="font-size:.82rem;font-weight:700;margin-bottom:.35rem">From GitHub release</div>
     <div style="font-size:.9rem;margin-bottom:.35rem">Current version: <strong id="gh-current-version">…</strong></div>
     <div style="font-size:.9rem;margin-bottom:.35rem">Latest release: <strong id="gh-latest-version">Not checked</strong></div>
     <div style="font-size:.85rem;color:#555;margin-bottom:.75rem" id="gh-update-status">Run a manual check to look for updates.</div>
-    <div class="row">
+    <div class="row" style="margin-bottom:.85rem">
       <button class="btn btn-secondary" onclick="githubUpdateCheck()">Check for Updates</button>
       <button class="btn btn-primary" id="gh-update-install-btn" onclick="githubUpdateInstall()" style="display:none">Install Update</button>
     </div>
-    <div id="toast-gh-update" class="toast"></div>
-  </div>
-  <div class="card">
-    <h2>Firmware Update (OTA)</h2>
-    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
-      Upload a new firmware binary (.bin). The device will reboot after a successful update.
-    </p>
+    <div id="toast-gh-update" class="toast" style="margin-bottom:.85rem"></div>
+    <div style="height:1px;background:#ececec;margin:.9rem 0"></div>
+    <div style="font-size:.82rem;font-weight:700;margin-bottom:.35rem">Manual upload</div>
     <input id="ota-file" type="file" accept=".bin" style="margin-bottom:.75rem">
     <button class="btn btn-primary" onclick="otaUpload()">Upload &amp; Update</button>
     <div id="toast-ota" class="toast"></div>
@@ -340,7 +336,7 @@
       <label for="auth-enabled">Enable Basic Auth</label>
     </div>
     <label>Username</label>
-    <input id="auth-user" type="text" maxlength="32" placeholder="admin">
+    <input id="auth-user" type="text" maxlength="32" value="admin">
     <label>Password <small>(leave unchanged to keep current)</small></label>
     <input id="auth-pass" type="password" maxlength="64" placeholder="(unchanged)" onfocus="authPassFocus()" oninput="authPassInput()">
     <button class="btn btn-primary" onclick="authSave()">Save Auth Settings</button>
@@ -348,9 +344,6 @@
   </div>
   <div class="card">
     <h2>Device</h2>
-    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
-      Firmware: <strong id="fw-version">…</strong>
-    </p>
     <div class="row">
       <button class="btn btn-secondary" onclick="systemReboot()">Reboot</button>
       <button class="btn btn-danger"    onclick="systemFactoryReset()">Factory Reset</button>
@@ -523,7 +516,6 @@
       setStatus('d-ble',  't-ble',  'BLE',  d.ble);
       if (d.fw_version) {
         const version = 'v' + d.fw_version;
-        document.getElementById('fw-version').textContent = version;
         document.getElementById('gh-current-version').textContent = version;
       }
     } catch(e) {}
@@ -649,17 +641,17 @@
   async function apSaveConfig() {
     const ssid = document.getElementById('ap-ssid').value.trim();
     const pass = document.getElementById('ap-pass').value;
-    if (!ssid) return toast('toast-ap-cfg', false, 'SSID is required');
+    if (!ssid) return toast('toast-ap', false, 'SSID is required');
     if (pass.length > 0 && pass.length < 8)
-      return toast('toast-ap-cfg', false, 'Password must be at least 8 characters (or empty for open network)');
+      return toast('toast-ap', false, 'Password must be at least 8 characters (or empty for open network)');
     try {
       const d = await api('/api/ap/config', 'POST', {
         enabled:  document.getElementById('ap-enabled').checked,
         ssid, password: pass,
       });
-      toast('toast-ap-cfg', d.ok, d.ok ? 'Saved!' : (d.error || 'Error'));
+      toast('toast-ap', d.ok, d.ok ? 'Saved!' : (d.error || 'Error'));
       refreshStatus();
-    } catch(e) { toast('toast-ap-cfg', false, 'Request failed'); }
+    } catch(e) { toast('toast-ap', false, 'Request failed'); }
   }
 
   // ── MQTT broker ───────────────────────────────────────────────────────────
@@ -687,7 +679,7 @@
     try {
       const d = await (await fetch('/api/system/auth')).json();
       document.getElementById('auth-enabled').checked = !!d.enabled;
-      document.getElementById('auth-user').value = d.username || '';
+      document.getElementById('auth-user').value = d.username || 'admin';
       resetAuthPasswordField(d.password_set);
     } catch(e) {}
   }

@@ -28,6 +28,9 @@ static const char *AUTH_NS = "http_auth";
 #define AUTH_USER_MAX     32
 #define AUTH_PASS_MAX     64
 #define AUTH_HASH_HEX_LEN 65
+#define GITHUB_HTTP_BUFFER_SIZE    8192
+#define GITHUB_HTTP_TX_BUFFER_SIZE 1024
+#define GITHUB_HTTP_MAX_REDIRECTS  5
 static const char *GITHUB_RELEASE_URL = "https://api.github.com/repos/robertoamd90/blu-button-bridge/releases/latest";
 static const char *GITHUB_ASSET_NAME  = "BluButtonBridge.bin";
 
@@ -417,6 +420,8 @@ static esp_err_t github_http_get_json(const char *url, http_buffer_t *buffer)
         .url = url,
         .method = HTTP_METHOD_GET,
         .timeout_ms = 15000,
+        .buffer_size = GITHUB_HTTP_BUFFER_SIZE,
+        .buffer_size_tx = GITHUB_HTTP_TX_BUFFER_SIZE,
         .event_handler = http_buffer_event_handler,
         .user_data = buffer,
         .crt_bundle_attach = esp_crt_bundle_attach,
@@ -511,6 +516,9 @@ static esp_err_t ota_install_from_github_release(const github_release_info_t *in
         .url = info->download_url,
         .method = HTTP_METHOD_GET,
         .timeout_ms = 15000,
+        .buffer_size = GITHUB_HTTP_BUFFER_SIZE,
+        .buffer_size_tx = GITHUB_HTTP_TX_BUFFER_SIZE,
+        .max_redirection_count = GITHUB_HTTP_MAX_REDIRECTS,
         .event_handler = ota_download_event_handler,
         .user_data = &ctx,
         .crt_bundle_attach = esp_crt_bundle_attach,
