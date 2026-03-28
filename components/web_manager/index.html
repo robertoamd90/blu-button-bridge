@@ -295,6 +295,20 @@
 <!-- System -->
 <div id="tab-system" class="tab">
   <div class="card">
+    <h2>GitHub Updates</h2>
+    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+      Check the latest public GitHub release and install it after SHA-256 verification.
+    </p>
+    <div style="font-size:.9rem;margin-bottom:.35rem">Current version: <strong id="gh-current-version">…</strong></div>
+    <div style="font-size:.9rem;margin-bottom:.35rem">Latest release: <strong id="gh-latest-version">Not checked</strong></div>
+    <div style="font-size:.85rem;color:#555;margin-bottom:.75rem" id="gh-update-status">Run a manual check to look for updates.</div>
+    <div class="row">
+      <button class="btn btn-secondary" onclick="githubUpdateCheck()">Check for Updates</button>
+      <button class="btn btn-primary" id="gh-update-install-btn" onclick="githubUpdateInstall()" style="display:none">Install Update</button>
+    </div>
+    <div id="toast-gh-update" class="toast"></div>
+  </div>
+  <div class="card">
     <h2>Firmware Update (OTA)</h2>
     <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
       Upload a new firmware binary (.bin). The device will reboot after a successful update.
@@ -442,7 +456,11 @@
       setStatus('d-mqtt', 't-mqtt', 'MQTT', d.mqtt);
       setStatus('d-ap',   't-ap',   'AP',   d.ap);
       setStatus('d-ble',  't-ble',  'BLE',  d.ble);
-      if (d.fw_version) document.getElementById('fw-version').textContent = 'v' + d.fw_version;
+      if (d.fw_version) {
+        const version = 'v' + d.fw_version;
+        document.getElementById('fw-version').textContent = version;
+        document.getElementById('gh-current-version').textContent = version;
+      }
     } catch(e) {}
   }
 
@@ -900,6 +918,71 @@
 
   // ── OTA ───────────────────────────────────────────────────────────────────
 
+  let _githubUpdateInfo = null;
+
+  function setGithubUpdateUi(data) {
+    const latestEl = document.getElementById('gh-latest-version');
+    const statusEl = document.getElementById('gh-update-status');
+    const installBtn = document.getElementById('gh-update-install-btn');
+
+    if (!data) {
+      latestEl.textContent = 'Not checked';
+      statusEl.textContent = 'Run a manual check to look for updates.';
+      installBtn.style.display = 'none';
+      return;
+    }
+
+    latestEl.textContent = data.latest_version || 'Unknown';
+    if (data.update_available) {
+      statusEl.textContent = `Update available (${data.asset_name}, ${(data.asset_size / 1024).toFixed(0)} KB).`;
+      installBtn.style.display = 'inline-flex';
+    } else {
+      statusEl.textContent = 'This device is already up to date.';
+      installBtn.style.display = 'none';
+    }
+  }
+
+  async function githubUpdateCheck() {
+    _githubUpdateInfo = null;
+    setGithubUpdateUi(null);
+    toast('toast-gh-update', true, 'Checking GitHub releases…');
+    try {
+      const d = await (await fetch('/api/system/update/check')).json();
+      if (!d.ok) {
+        toast('toast-gh-update', false, d.error || 'Update check failed');
+        return;
+      }
+      _githubUpdateInfo = d;
+      setGithubUpdateUi(d);
+      toast('toast-gh-update', true, d.update_available ? 'New firmware available' : 'Already up to date');
+    } catch(e) {
+      toast('toast-gh-update', false, 'Could not check GitHub right now');
+    }
+  }
+
+  async function githubUpdateInstall() {
+    if (!_githubUpdateInfo || !_githubUpdateInfo.update_available) {
+      toast('toast-gh-update', false, 'Check for updates first');
+      return;
+    }
+    if (!confirm(`Install ${_githubUpdateInfo.latest_version} from GitHub and reboot?`)) return;
+
+    toast('toast-gh-update', true, 'Downloading and verifying update…');
+    let ok = false;
+    try {
+      const d = await api('/api/system/update', 'POST', {});
+      if (d.ok) {
+        toast('toast-gh-update', true, 'Update complete, rebooting…');
+        ok = true;
+      } else {
+        toast('toast-gh-update', false, d.error || 'Update failed');
+      }
+    } catch(e) {
+      toast('toast-gh-update', false, 'Update failed — check the network connection');
+    }
+    if (ok) setTimeout(() => location.reload(), 8000);
+  }
+
   async function otaUpload() {
     const file = document.getElementById('ota-file').files[0];
     if (!file) { toast('toast-ota', false, 'Select a .bin file first'); return; }
@@ -1148,6 +1231,7 @@
   // ── Init ──────────────────────────────────────────────────────────────────
 
   refreshStatus();
+  setGithubUpdateUi(null);
   loadWifiConfig();
   loadMqttConfig();
   loadMqttActions();

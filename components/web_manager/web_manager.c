@@ -1,15 +1,21 @@
 #include <string.h>
 #include <stdlib.h>
+#include <strings.h>
+#include <ctype.h>
 #include "cJSON.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_system.h"
 #include "esp_ota_ops.h"
+#include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_app_desc.h"
+#include "mbedtls/md.h"
 #include "wifi_manager.h"
 #include "mqtt_manager.h"
 #include "gpio_manager.h"
@@ -17,9 +23,13 @@
 #include "ble_access.h"
 
 static const char *TAG = "web_manager";
+static const char *GITHUB_RELEASE_URL = "https://api.github.com/repos/robertoamd90/blu-button-bridge/releases/latest";
+static const char *GITHUB_ASSET_NAME  = "BluButtonBridge.bin";
 
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
+
+static SemaphoreHandle_t s_ota_mutex;
 
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
 
@@ -60,6 +70,344 @@ static esp_err_t send_error(httpd_req_t *req, const char *msg)
     cJSON_AddStringToObject(obj, "error", msg);
     httpd_resp_set_status(req, "400 Bad Request");
     send_cjson(req, obj);
+    return ESP_OK;
+}
+
+typedef struct {
+    int major;
+    int minor;
+    int patch;
+    bool prerelease;
+    bool valid;
+} semver_t;
+
+typedef struct {
+    char *buf;
+    size_t len;
+    size_t cap;
+    bool alloc_failed;
+} http_buffer_t;
+
+typedef struct {
+    char tag[32];
+    char version_label[40];
+    char html_url[256];
+    char download_url[512];
+    char digest_hex[65];
+    int asset_size;
+} github_release_info_t;
+
+typedef struct {
+    esp_ota_handle_t ota;
+    mbedtls_md_context_t sha_ctx;
+    bool sha_started;
+    size_t bytes_written;
+    esp_err_t stream_err;
+} ota_download_ctx_t;
+
+static void format_version_label(const char *version, char *out, size_t out_len)
+{
+    if (!out || out_len == 0) return;
+    if (!version || version[0] == '\0') {
+        strlcpy(out, "unknown", out_len);
+        return;
+    }
+    if (version[0] == 'v' || version[0] == 'V' || !isdigit((unsigned char)version[0])) {
+        strlcpy(out, version, out_len);
+        return;
+    }
+    snprintf(out, out_len, "v%s", version);
+}
+
+static bool parse_semver(const char *value, semver_t *out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!value) return false;
+
+    const char *p = value;
+    if (*p == 'v' || *p == 'V') p++;
+
+    char *end = NULL;
+    long major = strtol(p, &end, 10);
+    if (!end || end == p || *end != '.') return false;
+    p = end + 1;
+
+    long minor = strtol(p, &end, 10);
+    if (!end || end == p || *end != '.') return false;
+    p = end + 1;
+
+    long patch = strtol(p, &end, 10);
+    if (!end || end == p) return false;
+
+    if (*end != '\0' && *end != '-' && *end != '+') return false;
+
+    out->major = (int)major;
+    out->minor = (int)minor;
+    out->patch = (int)patch;
+    out->prerelease = (*end == '-');
+    out->valid = true;
+    return true;
+}
+
+static int compare_versions_for_update(const char *candidate, const char *current)
+{
+    semver_t candidate_v = {0}, current_v = {0};
+    bool candidate_ok = parse_semver(candidate, &candidate_v);
+    bool current_ok = parse_semver(current, &current_v);
+
+    if (!candidate_ok) return 0;
+    if (!current_ok) return 1;
+
+    if (candidate_v.major != current_v.major) return (candidate_v.major > current_v.major) ? 1 : -1;
+    if (candidate_v.minor != current_v.minor) return (candidate_v.minor > current_v.minor) ? 1 : -1;
+    if (candidate_v.patch != current_v.patch) return (candidate_v.patch > current_v.patch) ? 1 : -1;
+    if (candidate_v.prerelease != current_v.prerelease) return candidate_v.prerelease ? -1 : 1;
+    return 0;
+}
+
+static bool parse_github_digest(const char *digest, char *out_hex, size_t out_len)
+{
+    if (!digest || !out_hex || out_len < 65) return false;
+    const char *prefix = "sha256:";
+    size_t prefix_len = strlen(prefix);
+    if (strncasecmp(digest, prefix, prefix_len) != 0) return false;
+
+    const char *hex = digest + prefix_len;
+    if (strlen(hex) != 64) return false;
+    for (size_t i = 0; i < 64; i++) {
+        if (!isxdigit((unsigned char)hex[i])) return false;
+        out_hex[i] = (char)tolower((unsigned char)hex[i]);
+    }
+    out_hex[64] = '\0';
+    return true;
+}
+
+static esp_err_t http_buffer_event_handler(esp_http_client_event_t *evt)
+{
+    http_buffer_t *buffer = (http_buffer_t *)evt->user_data;
+    if (!buffer) return ESP_OK;
+
+    if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data_len > 0) {
+        size_t needed = buffer->len + (size_t)evt->data_len + 1;
+        if (needed > buffer->cap) {
+            size_t new_cap = (buffer->cap > 0) ? buffer->cap : 4096;
+            while (new_cap < needed) new_cap *= 2;
+            char *new_buf = realloc(buffer->buf, new_cap);
+            if (!new_buf) {
+                buffer->alloc_failed = true;
+                return ESP_ERR_NO_MEM;
+            }
+            buffer->buf = new_buf;
+            buffer->cap = new_cap;
+        }
+        memcpy(buffer->buf + buffer->len, evt->data, evt->data_len);
+        buffer->len += (size_t)evt->data_len;
+        buffer->buf[buffer->len] = '\0';
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t ota_download_event_handler(esp_http_client_event_t *evt)
+{
+    ota_download_ctx_t *ctx = (ota_download_ctx_t *)evt->user_data;
+    if (!ctx) return ESP_OK;
+
+    if (evt->event_id != HTTP_EVENT_ON_DATA || evt->data_len <= 0) return ESP_OK;
+
+    int status = esp_http_client_get_status_code(evt->client);
+    if (status != 200) return ESP_OK;
+
+    if (!ctx->sha_started) {
+        const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+        if (!md_info) {
+            ctx->stream_err = ESP_FAIL;
+            return ESP_FAIL;
+        }
+        mbedtls_md_init(&ctx->sha_ctx);
+        if (mbedtls_md_setup(&ctx->sha_ctx, md_info, 0) != 0 || mbedtls_md_starts(&ctx->sha_ctx) != 0) {
+            mbedtls_md_free(&ctx->sha_ctx);
+            ctx->stream_err = ESP_FAIL;
+            return ESP_FAIL;
+        }
+        ctx->sha_started = true;
+    }
+
+    if (mbedtls_md_update(&ctx->sha_ctx, (const unsigned char *)evt->data, evt->data_len) != 0) {
+        ctx->stream_err = ESP_FAIL;
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = esp_ota_write(ctx->ota, evt->data, evt->data_len);
+    if (err != ESP_OK) {
+        ctx->stream_err = err;
+        return err;
+    }
+
+    ctx->bytes_written += (size_t)evt->data_len;
+    return ESP_OK;
+}
+
+static void sha256_hex(const unsigned char digest[32], char *out_hex, size_t out_len)
+{
+    if (!out_hex || out_len < 65) return;
+    for (int i = 0; i < 32; i++) snprintf(out_hex + (i * 2), out_len - (size_t)(i * 2), "%02x", digest[i]);
+}
+
+static esp_err_t github_http_get_json(const char *url, http_buffer_t *buffer)
+{
+    if (!url || !buffer) return ESP_ERR_INVALID_ARG;
+
+    free(buffer->buf);
+    buffer->buf = NULL;
+    buffer->len = 0;
+    buffer->cap = 0;
+    buffer->alloc_failed = false;
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 15000,
+        .event_handler = http_buffer_event_handler,
+        .user_data = buffer,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return ESP_ERR_NO_MEM;
+
+    esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
+    esp_http_client_set_header(client, "User-Agent", "BluButtonBridge");
+    esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK) return err;
+    if (status != 200) return ESP_FAIL;
+    if (buffer->alloc_failed) return ESP_ERR_NO_MEM;
+    if (!buffer->buf || buffer->len == 0) return ESP_FAIL;
+    return ESP_OK;
+}
+
+static esp_err_t github_fetch_latest_release(github_release_info_t *info)
+{
+    if (!info) return ESP_ERR_INVALID_ARG;
+    memset(info, 0, sizeof(*info));
+
+    http_buffer_t buffer = {0};
+
+    esp_err_t err = github_http_get_json(GITHUB_RELEASE_URL, &buffer);
+    if (err != ESP_OK) {
+        free(buffer.buf);
+        return err;
+    }
+
+    cJSON *root = cJSON_Parse(buffer.buf);
+    free(buffer.buf);
+    if (!root) return ESP_FAIL;
+
+    cJSON *tag = cJSON_GetObjectItem(root, "tag_name");
+    cJSON *html_url = cJSON_GetObjectItem(root, "html_url");
+    cJSON *assets = cJSON_GetObjectItem(root, "assets");
+    if (!cJSON_IsString(tag) || !cJSON_IsArray(assets)) {
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+
+    strlcpy(info->tag, tag->valuestring, sizeof(info->tag));
+    format_version_label(tag->valuestring, info->version_label, sizeof(info->version_label));
+    if (cJSON_IsString(html_url)) strlcpy(info->html_url, html_url->valuestring, sizeof(info->html_url));
+
+    bool found_asset = false;
+    cJSON *asset = NULL;
+    cJSON_ArrayForEach(asset, assets) {
+        cJSON *name = cJSON_GetObjectItem(asset, "name");
+        if (!cJSON_IsString(name) || strcmp(name->valuestring, GITHUB_ASSET_NAME) != 0) continue;
+
+        cJSON *download_url = cJSON_GetObjectItem(asset, "browser_download_url");
+        cJSON *digest = cJSON_GetObjectItem(asset, "digest");
+        cJSON *size = cJSON_GetObjectItem(asset, "size");
+        if (!cJSON_IsString(download_url) || !cJSON_IsString(digest) || !cJSON_IsNumber(size)) break;
+        if (!parse_github_digest(digest->valuestring, info->digest_hex, sizeof(info->digest_hex))) break;
+
+        strlcpy(info->download_url, download_url->valuestring, sizeof(info->download_url));
+        info->asset_size = (int)size->valuedouble;
+        found_asset = true;
+        break;
+    }
+
+    cJSON_Delete(root);
+    return found_asset ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+static esp_err_t ota_install_from_github_release(const github_release_info_t *info)
+{
+    if (!info || info->download_url[0] == '\0' || info->digest_hex[0] == '\0') return ESP_ERR_INVALID_ARG;
+
+    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
+    if (!part) return ESP_ERR_NOT_FOUND;
+
+    esp_ota_handle_t ota;
+    esp_err_t err = esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota);
+    if (err != ESP_OK) return err;
+
+    ota_download_ctx_t ctx = {
+        .ota = ota,
+        .stream_err = ESP_OK,
+    };
+
+    esp_http_client_config_t cfg = {
+        .url = info->download_url,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 15000,
+        .event_handler = ota_download_event_handler,
+        .user_data = &ctx,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        esp_ota_abort(ota);
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_http_client_set_header(client, "User-Agent", "BluButtonBridge");
+
+    err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || ctx.stream_err != ESP_OK || status != 200 || ctx.bytes_written == 0) {
+        if (ctx.sha_started) mbedtls_md_free(&ctx.sha_ctx);
+        esp_ota_abort(ota);
+        return (ctx.stream_err != ESP_OK) ? ctx.stream_err : ESP_FAIL;
+    }
+
+    unsigned char digest[32];
+    char actual_hex[65];
+    if (!ctx.sha_started || mbedtls_md_finish(&ctx.sha_ctx, digest) != 0) {
+        if (ctx.sha_started) mbedtls_md_free(&ctx.sha_ctx);
+        esp_ota_abort(ota);
+        return ESP_FAIL;
+    }
+    mbedtls_md_free(&ctx.sha_ctx);
+
+    sha256_hex(digest, actual_hex, sizeof(actual_hex));
+    if (strcmp(actual_hex, info->digest_hex) != 0) {
+        ESP_LOGW(TAG, "GitHub OTA digest mismatch: expected %s got %s", info->digest_hex, actual_hex);
+        esp_ota_abort(ota);
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    err = esp_ota_end(ota);
+    if (err != ESP_OK) return err;
+
+    err = esp_ota_set_boot_partition(part);
+    if (err != ESP_OK) return err;
+
     return ESP_OK;
 }
 
@@ -930,31 +1278,117 @@ static esp_err_t handle_ble_device_delete(httpd_req_t *req)
 
 // ── OTA update ────────────────────────────────────────────────────────────────
 
+static bool ota_try_lock(void)
+{
+    return s_ota_mutex && xSemaphoreTake(s_ota_mutex, 0) == pdTRUE;
+}
+
+static void ota_unlock(void)
+{
+    if (s_ota_mutex) xSemaphoreGive(s_ota_mutex);
+}
+
+// GET /api/system/update/check
+static esp_err_t handle_update_check(httpd_req_t *req)
+{
+    const esp_app_desc_t *app = esp_app_get_description();
+    github_release_info_t release;
+    esp_err_t err = github_fetch_latest_release(&release);
+    if (err == ESP_ERR_NOT_FOUND) return send_error(req, "latest release is missing BluButtonBridge.bin or its sha256 digest");
+    if (err != ESP_OK) return send_error(req, "could not fetch latest GitHub release");
+
+    char current_version[40];
+    format_version_label(app->version, current_version, sizeof(current_version));
+
+    cJSON *obj = cJSON_CreateObject();
+    cJSON_AddBoolToObject(obj, "ok", true);
+    cJSON_AddStringToObject(obj, "current_version", current_version);
+    cJSON_AddStringToObject(obj, "latest_version", release.version_label);
+    cJSON_AddBoolToObject(obj, "update_available", compare_versions_for_update(release.tag, app->version) > 0);
+    cJSON_AddStringToObject(obj, "release_url", release.html_url);
+    cJSON_AddStringToObject(obj, "asset_name", GITHUB_ASSET_NAME);
+    cJSON_AddNumberToObject(obj, "asset_size", release.asset_size);
+    send_cjson(req, obj);
+    return ESP_OK;
+}
+
 // POST /api/system/ota  (raw binary body)
 static esp_err_t handle_ota_upload(httpd_req_t *req)
 {
+    if (!ota_try_lock()) return send_error(req, "another OTA operation is already in progress");
+
     const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
-    if (!part) return send_error(req, "no OTA partition");
+    if (!part) { ota_unlock(); return send_error(req, "no OTA partition"); }
 
     esp_ota_handle_t ota;
     esp_err_t err = esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota);
-    if (err != ESP_OK) return send_error(req, "OTA begin failed");
+    if (err != ESP_OK) { ota_unlock(); return send_error(req, "OTA begin failed"); }
 
     char buf[1024];
     int remaining = req->content_len;
     while (remaining > 0) {
         int n = httpd_req_recv(req, buf, remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf));
-        if (n <= 0) { esp_ota_abort(ota); return send_error(req, "receive error"); }
+        if (n <= 0) {
+            esp_ota_abort(ota);
+            ota_unlock();
+            return send_error(req, "receive error");
+        }
         err = esp_ota_write(ota, buf, n);
-        if (err != ESP_OK) { esp_ota_abort(ota); return send_error(req, "OTA write failed"); }
+        if (err != ESP_OK) {
+            esp_ota_abort(ota);
+            ota_unlock();
+            return send_error(req, "OTA write failed");
+        }
         remaining -= n;
     }
 
     err = esp_ota_end(ota);
-    if (err != ESP_OK) return send_error(req, "OTA validation failed");
+    if (err != ESP_OK) {
+        ota_unlock();
+        return send_error(req, "OTA validation failed");
+    }
 
     err = esp_ota_set_boot_partition(part);
-    if (err != ESP_OK) return send_error(req, "set boot partition failed");
+    if (err != ESP_OK) {
+        ota_unlock();
+        return send_error(req, "set boot partition failed");
+    }
+
+    ota_unlock();
+    send_json(req, "{\"ok\":true}");
+    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+// POST /api/system/update
+static esp_err_t handle_update_install(httpd_req_t *req)
+{
+    (void)req;
+    if (!ota_try_lock()) return send_error(req, "another OTA operation is already in progress");
+
+    const esp_app_desc_t *app = esp_app_get_description();
+    github_release_info_t release;
+    esp_err_t err = github_fetch_latest_release(&release);
+    if (err == ESP_ERR_NOT_FOUND) {
+        ota_unlock();
+        return send_error(req, "latest release is missing BluButtonBridge.bin or its sha256 digest");
+    }
+    if (err != ESP_OK) {
+        ota_unlock();
+        return send_error(req, "could not fetch latest GitHub release");
+    }
+
+    if (compare_versions_for_update(release.tag, app->version) <= 0) {
+        ota_unlock();
+        return send_error(req, "no newer GitHub release is available");
+    }
+
+    ESP_LOGI(TAG, "Installing GitHub release %s from %s", release.version_label, release.download_url);
+    err = ota_install_from_github_release(&release);
+    ota_unlock();
+
+    if (err == ESP_ERR_INVALID_CRC) return send_error(req, "firmware digest verification failed");
+    if (err != ESP_OK) return send_error(req, "GitHub OTA download failed");
 
     send_json(req, "{\"ok\":true}");
     xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
@@ -1278,6 +1712,12 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
 
 void web_manager_init(void)
 {
+    if (!s_ota_mutex) s_ota_mutex = xSemaphoreCreateMutex();
+    if (!s_ota_mutex) {
+        ESP_LOGE(TAG, "Failed to create OTA mutex");
+        return;
+    }
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size        = 10240;
     config.max_uri_handlers  = 40;
@@ -1318,6 +1758,8 @@ void web_manager_init(void)
         { .uri = "/api/ap/config",            .method = HTTP_POST,   .handler = handle_ap_config_set       },
         { .uri = "/api/system/reboot",        .method = HTTP_POST,   .handler = handle_system_reboot         },
         { .uri = "/api/system/factory-reset", .method = HTTP_POST,   .handler = handle_system_factory_reset  },
+        { .uri = "/api/system/update/check",  .method = HTTP_GET,    .handler = handle_update_check          },
+        { .uri = "/api/system/update",        .method = HTTP_POST,   .handler = handle_update_install        },
         { .uri = "/api/system/ota",           .method = HTTP_POST,   .handler = handle_ota_upload             },
         { .uri = "/api/system/config",        .method = HTTP_GET,    .handler = handle_config_download        },
         { .uri = "/api/system/config",        .method = HTTP_POST,   .handler = handle_config_restore         },
