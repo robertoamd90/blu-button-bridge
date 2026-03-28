@@ -5,11 +5,11 @@
 #include "esp_err.h"
 
 #define MQTT_STATUS_LIST \
-    X(NOT_CONFIG, "not config") \
-    X(DISABLED,   "disabled")   \
-    X(DOWN,       "down")       \
-    X(ERROR,      "error")      \
-    X(UP,         "up")
+    X(NOT_CONFIG,  "not config")  \
+    X(DISABLED,    "disabled")    \
+    X(WAITING_NET, "waiting net") \
+    X(CONNECTING,  "connecting")  \
+    X(UP,          "up")
 
 typedef enum {
 #define X(name, str) MQTT_STATUS_##name,
@@ -24,14 +24,19 @@ const char *mqtt_status_str(mqtt_status_t s);
 typedef void (*mqtt_message_cb_t)(const char *topic, const char *payload, int payload_len);
 typedef void (*mqtt_status_cb_t)(mqtt_status_t status);
 
-// Connects to a broker with explicit parameters. Blocks until connected or timeout (10 s).
-// Requires WiFi to be connected first.
+// Connects to a broker with explicit parameters and continues reconnecting in the background.
+// Requires WiFi to be configured; connectivity may come up later.
 void mqtt_connect_broker(const char *host, uint32_t port, const char *username,
                          const char *password, bool use_tls);
 
 // Initializes MQTT: auto-connects to the broker using saved NVS credentials.
+// Loads runtime state and saved configuration without blocking boot.
 // Call once from app_main.
 void mqtt_init(void);
+
+// Informs MQTT whether the network is currently available.
+// When the network comes up, MQTT may start or resume a background connection attempt.
+void mqtt_set_network_available(bool available);
 
 // Disconnects from the broker (credentials remain in NVS).
 void mqtt_disconnect(void);
@@ -53,7 +58,7 @@ mqtt_status_t mqtt_get_status(void);
 // Registers a callback invoked whenever the MQTT connection status changes.
 void mqtt_set_status_callback(mqtt_status_cb_t cb);
 
-// Saves credentials to NVS and connects (for programmatic use, e.g. web API).
+// Saves credentials to NVS and starts connecting in the background (for programmatic use, e.g. web API).
 // If password_provided is false, keeps the existing NVS password.
 // If password_provided is true, password may be empty to clear the saved password.
 void mqtt_connect_api(const char *host, uint32_t port,

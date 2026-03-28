@@ -2,13 +2,11 @@
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
 #include "freertos/timers.h"
 #include "nvs.h"
 #include "esp_event.h"
 #include "esp_wifi.h"
 #include "wifi_manager.h"
-#include "mqtt_manager.h"
 #include "gpio_manager.h"
 #include "ble_access.h"
 #include "esp_log.h"
@@ -18,19 +16,18 @@
 #include "esp_mac.h"
 #include "lwip/sockets.h"
 
-#define WIFI_CONNECTED_BIT  BIT0
-
 static const char *TAG = "wifi";
 
-static EventGroupHandle_t   wifi_events;
 static volatile wifi_status_t s_status = WIFI_STATUS_NOT_CONFIG;
+static wifi_status_cb_t     s_status_cb = NULL;
+static wifi_ap_status_cb_t  s_ap_status_cb = NULL;
 static TimerHandle_t        s_reconnect_timer = NULL;
 static volatile bool        s_ap_active = false;
 static TaskHandle_t         s_dns_task_handle = NULL;
 static esp_netif_t         *s_sta_netif = NULL;
 
-static void update_system_led_status(void);
-static void on_mqtt_status_changed(mqtt_status_t status);
+static void set_status(wifi_status_t status);
+static void notify_ap_status(void);
 
 // AP config in RAM — ssid is overwritten at runtime by wifi_ap_load_config (MAC-based)
 static wifi_ap_settings_t s_ap_cfg = {
@@ -41,24 +38,40 @@ static wifi_ap_settings_t s_ap_cfg = {
 
 // ── Event handlers ─────────────────────────────────────────────────────────────
 
+static void set_status(wifi_status_t status)
+{
+    if (s_status == status) return;
+    s_status = status;
+    if (s_status_cb) {
+        s_status_cb(status);
+    }
+}
+
+static void notify_ap_status(void)
+{
+    if (s_ap_status_cb) {
+        s_ap_status_cb(s_ap_active);
+    }
+}
+
 static void on_wifi_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
+    (void)arg;
+    (void)base;
+    (void)id;
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
-    s_status = WIFI_STATUS_UP;
+    set_status(WIFI_STATUS_UP);
     xTimerStop(s_reconnect_timer, 0);
-    xEventGroupSetBits(wifi_events, WIFI_CONNECTED_BIT);
     ESP_LOGI(TAG, "IP: " IPSTR, IP2STR(&event->ip_info.ip));
     if (s_ap_active && !s_ap_cfg.enabled) {
         wifi_stop_ap();
-    } else {
-        update_system_led_status();
     }
 }
 
 static void reconnect_timer_cb(TimerHandle_t t)
 {
     (void)t;
-    if (s_status == WIFI_STATUS_DOWN || s_status == WIFI_STATUS_ERROR) {
+    if (s_status == WIFI_STATUS_CONNECTING) {
         esp_wifi_disconnect();   // cancel any stuck attempt
         esp_wifi_connect();
     }
@@ -66,12 +79,18 @@ static void reconnect_timer_cb(TimerHandle_t t)
 
 static void on_wifi_disconnected(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    xEventGroupClearBits(wifi_events, WIFI_CONNECTED_BIT);
-    if (s_status == WIFI_STATUS_UP || s_status == WIFI_STATUS_ERROR) {
-        s_status = WIFI_STATUS_DOWN;
-        xTimerReset(s_reconnect_timer, 0);
+    (void)arg;
+    (void)base;
+    (void)id;
+    wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)data;
+
+    if (s_status != WIFI_STATUS_DISABLED && s_status != WIFI_STATUS_NOT_CONFIG) {
+        set_status(WIFI_STATUS_CONNECTING);
+        if (!event || event->reason != WIFI_REASON_ASSOC_LEAVE) {
+            esp_wifi_connect();
+            xTimerReset(s_reconnect_timer, 0);
+        }
     }
-    update_system_led_status();
 }
 
 // ── Private helpers ────────────────────────────────────────────────────────────
@@ -93,34 +112,6 @@ static bool load_credentials(char *ssid, size_t ssid_len,
 
     nvs_close(nvs);
     return ok;
-}
-
-static void update_system_led_status(void)
-{
-    if (s_ap_active) {
-        gpio_manager_set_system_led_mode(SYSTEM_LED_AP_BLINK);
-        return;
-    }
-
-    if (s_status == WIFI_STATUS_DOWN || s_status == WIFI_STATUS_ERROR) {
-        gpio_manager_set_system_led_mode(SYSTEM_LED_WIFI_DISCONNECTED_HINT);
-        return;
-    }
-
-    mqtt_status_t mqtt_status = mqtt_get_status();
-    if (s_status == WIFI_STATUS_UP &&
-            (mqtt_status == MQTT_STATUS_DOWN || mqtt_status == MQTT_STATUS_ERROR)) {
-        gpio_manager_set_system_led_mode(SYSTEM_LED_MQTT_DISCONNECTED_HINT);
-        return;
-    }
-
-    gpio_manager_set_system_led_mode(SYSTEM_LED_OFF);
-}
-
-static void on_mqtt_status_changed(mqtt_status_t status)
-{
-    (void)status;
-    update_system_led_status();
 }
 
 static void set_device_hostname(void)
@@ -145,13 +136,11 @@ static void set_device_hostname(void)
     }
 }
 
-// Connects to a network; blocks until IP acquired or timeout (10 s).
+// Starts a connection attempt and lets retries continue in the background.
 static void wifi_connect(const char *ssid, const char *pass)
 {
-    // Set DOWN before disconnect so on_wifi_disconnected won't restart the reconnect timer
     xTimerStop(s_reconnect_timer, 0);
-    s_status = WIFI_STATUS_DOWN;
-    xEventGroupClearBits(wifi_events, WIFI_CONNECTED_BIT);
+    set_status(WIFI_STATUS_CONNECTING);
     esp_wifi_disconnect();            // no-op if not connected; ensures clean state
     vTaskDelay(pdMS_TO_TICKS(300));   // let the disconnect event settle
 
@@ -162,18 +151,7 @@ static void wifi_connect(const char *ssid, const char *pass)
     strncpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password));
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
     esp_wifi_connect();
-
-    EventBits_t bits = xEventGroupWaitBits(wifi_events, WIFI_CONNECTED_BIT,
-                                           false, true, pdMS_TO_TICKS(10000));
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "connected: %s", ssid);
-        update_system_led_status();
-    } else {
-        s_status = WIFI_STATUS_ERROR;
-        ESP_LOGW(TAG, "connection failed, retrying in 5s");
-        xTimerReset(s_reconnect_timer, 0);
-        update_system_led_status();
-    }
+    xTimerReset(s_reconnect_timer, 0);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -224,17 +202,32 @@ wifi_status_t wifi_get_status(void)
     return s_status;
 }
 
+void wifi_set_status_callback(wifi_status_cb_t cb)
+{
+    s_status_cb = cb;
+    if (s_status_cb) {
+        s_status_cb(s_status);
+    }
+}
+
+void wifi_set_ap_status_callback(wifi_ap_status_cb_t cb)
+{
+    s_ap_status_cb = cb;
+    if (s_ap_status_cb) {
+        s_ap_status_cb(s_ap_active);
+    }
+}
+
 void wifi_disconnect(void)
 {
-    s_status = WIFI_STATUS_DISABLED;
+    set_status(WIFI_STATUS_DISABLED);
     xTimerStop(s_reconnect_timer, 0);
     esp_wifi_disconnect();
-    update_system_led_status();
 }
 
 void wifi_clean_credentials(void)
 {
-    s_status = WIFI_STATUS_NOT_CONFIG;
+    set_status(WIFI_STATUS_NOT_CONFIG);
     xTimerStop(s_reconnect_timer, 0);
     esp_wifi_disconnect();
     nvs_handle_t nvs;
@@ -244,7 +237,6 @@ void wifi_clean_credentials(void)
         nvs_commit(nvs);
         nvs_close(nvs);
     }
-    update_system_led_status();
 }
 
 void wifi_init(void)
@@ -261,12 +253,10 @@ void wifi_init(void)
     esp_wifi_set_ps(WIFI_PS_NONE);
     esp_wifi_start();
 
-    wifi_events = xEventGroupCreate();
     s_reconnect_timer = xTimerCreate("wifi_rc", pdMS_TO_TICKS(5000), pdFALSE, NULL, reconnect_timer_cb);
     esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP,        on_wifi_got_ip,        NULL);
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_wifi_disconnected,  NULL);
     gpio_manager_set_boot_ap_callback(wifi_start_ap);
-    mqtt_set_status_callback(on_mqtt_status_changed);
 
     // Application logic: load config, start AP and/or connect
     wifi_ap_load_config(&s_ap_cfg);
@@ -282,8 +272,6 @@ void wifi_init(void)
     if (has_creds) {
         ESP_LOGI(TAG, "connecting to %s", ssid);
         wifi_connect(ssid, pass);
-    } else {
-        update_system_led_status();
     }
 }
 
@@ -363,7 +351,7 @@ void wifi_start_ap(void)
     s_ap_active = true;
     ble_access_scan_stop();
     esp_wifi_set_mode(WIFI_MODE_APSTA);
-    update_system_led_status();
+    notify_ap_status();
 
     wifi_config_t ap_cfg = { 0 };
     strncpy((char *)ap_cfg.ap.ssid, s_ap_cfg.ssid, sizeof(ap_cfg.ap.ssid) - 1);
@@ -389,7 +377,7 @@ void wifi_stop_ap(void)
     s_ap_active = false; // signals DNS task to exit its loop
     esp_wifi_set_mode(WIFI_MODE_STA);
     ble_access_scan_start();
-    update_system_led_status();
+    notify_ap_status();
     ESP_LOGI(TAG, "AP stopped");
 }
 

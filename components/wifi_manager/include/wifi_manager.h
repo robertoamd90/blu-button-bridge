@@ -1,12 +1,12 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdbool.h>
 
 #define WIFI_STATUS_LIST \
     X(NOT_CONFIG, "not config") \
     X(DISABLED,   "disabled")   \
-    X(DOWN,       "down")       \
-    X(ERROR,      "error")      \
+    X(CONNECTING, "connecting") \
     X(UP,         "up")
 
 typedef enum {
@@ -15,14 +15,23 @@ typedef enum {
 #undef X
 } wifi_status_t;
 
+typedef void (*wifi_status_cb_t)(wifi_status_t status);
+typedef void (*wifi_ap_status_cb_t)(bool active);
+
 const char *wifi_status_str(wifi_status_t s);
 
-// Initializes the WiFi stack and connects using saved credentials (or starts AP if none).
+// Initializes the WiFi stack and starts any saved STA/AP connectivity in the background.
 // Call once from app_main.
 void wifi_init(void);
 
 // Returns the current WiFi state.
 wifi_status_t wifi_get_status(void);
+
+// Registers a callback invoked whenever the WiFi connection status changes.
+void wifi_set_status_callback(wifi_status_cb_t cb);
+
+// Registers a callback invoked whenever the SoftAP active state changes.
+void wifi_set_ap_status_callback(wifi_ap_status_cb_t cb);
 
 // Disconnects from WiFi (credentials remain stored in NVS).
 void wifi_disconnect(void);
@@ -30,7 +39,7 @@ void wifi_disconnect(void);
 // Erases WiFi credentials from NVS.
 void wifi_clean_credentials(void);
 
-// Saves credentials to NVS and connects (for programmatic use, e.g. web API).
+// Saves credentials to NVS and starts connecting in the background (for programmatic use, e.g. web API).
 // If password_provided is false, preserves the password already stored in NVS when possible.
 // If password_provided is true, pass may be empty to configure an open network.
 void wifi_connect_api(const char *ssid, const char *pass, bool password_provided);

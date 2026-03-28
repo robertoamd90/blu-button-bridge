@@ -578,7 +578,7 @@ static esp_err_t ota_install_from_github_release(const github_release_info_t *in
     return ESP_OK;
 }
 
-// ── Async background tasks (WiFi/MQTT connect block up to 10s) ───────────────
+// ── Async background tasks (WiFi/MQTT connect without blocking the HTTP path) ─
 
 typedef struct { char ssid[33]; char pass[65]; bool has_pass; } wifi_creds_t;
 typedef struct { char host[128]; uint32_t port; char user[64]; char pass[64]; bool tls; bool has_pass; } mqtt_creds_t;
