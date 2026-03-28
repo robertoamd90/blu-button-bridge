@@ -374,6 +374,29 @@
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  function formatAge(seconds) {
+    if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return 'unknown';
+    const s = Math.max(0, Math.floor(Number(seconds)));
+    if (s < 60) return s + 's ago';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    const d = Math.floor(h / 24);
+    return d + 'd ago';
+  }
+
+  function formatBleEvent(ev) {
+    switch (ev) {
+      case 'press': return 'Press';
+      case 'double_press': return 'Double press';
+      case 'triple_press': return 'Triple press';
+      case 'long_press': return 'Long press';
+      case 'button_hold': return 'Button hold';
+      default: return ev || 'Unknown';
+    }
+  }
+
   const MASKED_SECRET = '********';
   let _wifiSavedSsid = '';
   let _wifiPasswordSet = false;
@@ -1072,6 +1095,17 @@
             ${d.decrypt_error ? ' <span style="color:#c2410c;font-size:.75rem;font-weight:600">&#9888; Decrypt Error</span>' : ''}
           </div>
           <div style="font-size:.76rem;color:#888;font-family:monospace">${d.mac}</div>
+          <div style="font-size:.76rem;color:#555;margin-top:.2rem">
+            ${d.battery_percent === null ? 'Battery: --' : ('Battery: ' + d.battery_percent + '%')}
+          </div>
+          <div style="font-size:.76rem;color:#555;margin-top:.15rem">
+            ${d.last_seen_age_s === null ? 'Last seen: waiting for traffic' : ('Last seen: ' + formatAge(d.last_seen_age_s))}
+          </div>
+          <div style="font-size:.76rem;color:#555;margin-top:.15rem">
+            ${d.last_button_event === null
+              ? 'Last event: none yet'
+              : ('Last event: ' + formatBleEvent(d.last_button_event) + ' (' + formatAge(d.last_button_event_age_s) + ')')}
+          </div>
         </div>
         <div class="row" style="margin:0;gap:.35rem">
           <button class="btn btn-secondary" style="padding:.3rem .7rem;font-size:.8rem"
@@ -1239,7 +1273,10 @@
   loadGpioActions();
   loadApConfig();
   loadBleDevices();
-  setInterval(refreshStatus, 5000);
+  setInterval(() => {
+    refreshStatus();
+    loadBleDevices();
+  }, 5000);
 </script>
 </body>
 </html>

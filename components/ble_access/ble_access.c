@@ -6,6 +6,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -26,6 +27,14 @@ static const char *TAG = "ble_access";
 // ── State ─────────────────────────────────────────────────────────────────────
 
 static ble_device_t         s_devices[BLE_ACCESS_MAX_DEVICES];
+typedef struct {
+    int64_t  last_seen_ms;
+    int64_t  last_button_event_ms;
+    uint8_t  last_button_event;
+    uint8_t  battery_percent;
+    bool     battery_known;
+} ble_device_runtime_t;
+static ble_device_runtime_t s_runtime[BLE_ACCESS_MAX_DEVICES];
 static psa_key_id_t         s_psa_keys[BLE_ACCESS_MAX_DEVICES]; // cached PSA key handles
 static bool                 s_key_import_errors[BLE_ACCESS_MAX_DEVICES];
 static bool                 s_decrypt_errors[BLE_ACCESS_MAX_DEVICES];
@@ -86,6 +95,11 @@ static bool mac_equal(const uint8_t a[6], const uint8_t b[6])
     return memcmp(a, b, 6) == 0;
 }
 
+static int64_t now_ms(void)
+{
+    return esp_timer_get_time() / 1000;
+}
+
 // Returns the data length for known BTHome v2 object IDs, -1 for unknown.
 static int bthome_obj_len(uint8_t obj_id)
 {
@@ -122,6 +136,19 @@ static uint16_t get_gpio_event_mask(const ble_device_t *dev, uint8_t event)
         case 3: return dev->gpio_triple_press;
         case 4: return dev->gpio_long_press;
         default: return 0;
+    }
+}
+
+const char *ble_button_event_str(uint8_t event)
+{
+    switch (event) {
+        case BLE_BUTTON_EVENT_PRESS:             return "press";
+        case BLE_BUTTON_EVENT_DOUBLE_PRESS:      return "double_press";
+        case BLE_BUTTON_EVENT_TRIPLE_PRESS:      return "triple_press";
+        case BLE_BUTTON_EVENT_LONG_PRESS:        return "long_press";
+        case BLE_BUTTON_EVENT_BUTTON_HOLD:
+        case BLE_BUTTON_EVENT_BUTTON_HOLD_LEGACY:return "button_hold";
+        default:                                 return "unknown";
     }
 }
 
@@ -310,37 +337,62 @@ static void handle_adv(const uint8_t mac[6], const uint8_t *adv, uint8_t adv_len
 
     // Parse BTHome objects in decrypted payload
     int pi = 0;
+    int64_t seen_ms = now_ms();
+    bool saw_button_event = false;
+    uint8_t button_event = 0;
+    uint16_t mqtt_mask = 0;
+    uint16_t gpio_mask = 0;
+    bool saw_battery = false;
+    uint8_t battery_percent = 0;
     while (pi < dec_len) {
         uint8_t obj_id = plaintext[pi++];
         int dlen = bthome_obj_len(obj_id);
         if (dlen < 0 || pi + dlen > dec_len) break;
 
+        if (obj_id == 0x01) {
+            saw_battery = true;
+            battery_percent = plaintext[pi];
+        }
+
         if (obj_id == BTN_OBJ_ID) {
-            uint8_t event_val = plaintext[pi];
-            uint16_t mqtt_mask = get_mqtt_event_mask(dev, event_val);
-            uint16_t gpio_mask = get_gpio_event_mask(dev, event_val);
-            char label[32];
-            strlcpy(label, dev->label, sizeof(label));
-            xSemaphoreGive(s_mutex);
-            ESP_LOGI(TAG,
-                     "'%s' button event=%u mqtt_mask=0x%04X gpio_mask=0x%04X",
-                     label, event_val, mqtt_mask, gpio_mask);
-            for (int b = 0; b < MQTT_MAX_ACTIONS; b++) {
-                if (mqtt_mask & (1u << b)) {
-                    mqtt_action_trigger(b);
-                }
-            }
-            for (int b = 0; b < GPIO_ACTION_MAX; b++) {
-                if (gpio_mask & (1u << b)) {
-                    gpio_action_trigger(b);
-                }
-            }
-            return;
+            saw_button_event = true;
+            button_event = plaintext[pi];
+            mqtt_mask = get_mqtt_event_mask(dev, button_event);
+            gpio_mask = get_gpio_event_mask(dev, button_event);
         }
         pi += dlen;
     }
 
+    s_runtime[dev_idx].last_seen_ms = seen_ms;
+    if (saw_battery) {
+        s_runtime[dev_idx].battery_known = true;
+        s_runtime[dev_idx].battery_percent = battery_percent;
+    }
+
+    char label[32];
+    if (saw_button_event) {
+        s_runtime[dev_idx].last_button_event = button_event;
+        s_runtime[dev_idx].last_button_event_ms = seen_ms;
+        strlcpy(label, dev->label, sizeof(label));
+    }
+
     xSemaphoreGive(s_mutex);
+
+    if (saw_button_event) {
+        ESP_LOGI(TAG,
+                 "'%s' button event=%u mqtt_mask=0x%04X gpio_mask=0x%04X",
+                 label, button_event, mqtt_mask, gpio_mask);
+        for (int b = 0; b < MQTT_MAX_ACTIONS; b++) {
+            if (mqtt_mask & (1u << b)) {
+                mqtt_action_trigger(b);
+            }
+        }
+        for (int b = 0; b < GPIO_ACTION_MAX; b++) {
+            if (gpio_mask & (1u << b)) {
+                gpio_action_trigger(b);
+            }
+        }
+    }
 }
 
 // ── NimBLE callbacks ──────────────────────────────────────────────────────────
@@ -415,6 +467,7 @@ void ble_access_init(void)
         return;
     }
     memset(s_psa_keys, 0, sizeof(s_psa_keys));
+    memset(s_runtime, 0, sizeof(s_runtime));
     memset(s_key_import_errors, 0, sizeof(s_key_import_errors));
     memset(s_decrypt_errors, 0, sizeof(s_decrypt_errors));
     memset(s_decrypt_failures, 0, sizeof(s_decrypt_failures));
@@ -501,6 +554,7 @@ esp_err_t ble_access_register_confirm(const uint8_t mac[6], const uint8_t key[16
         return err;
     }
     clear_crypto_status(idx);
+    memset(&s_runtime[idx], 0, sizeof(s_runtime[idx]));
 
     err = nvs_save();
     if (err != ESP_OK) {
@@ -559,6 +613,37 @@ esp_err_t ble_access_get_device_by_mac(const uint8_t mac[6], ble_device_t *out)
     for (int i = 0; i < s_count; i++) {
         if (mac_equal(s_devices[i].mac, mac)) {
             *out = s_devices[i];
+            xSemaphoreGive(s_mutex);
+            return ESP_OK;
+        }
+    }
+    xSemaphoreGive(s_mutex);
+    return ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t ble_access_get_device_telemetry(const uint8_t mac[6], ble_device_telemetry_t *out)
+{
+    if (!out) return ESP_ERR_INVALID_ARG;
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    int64_t current_ms = now_ms();
+    for (int i = 0; i < s_count; i++) {
+        if (mac_equal(s_devices[i].mac, mac)) {
+            memset(out, 0, sizeof(*out));
+            if (s_runtime[i].last_seen_ms > 0) {
+                out->has_last_seen = true;
+                out->last_seen_age_s = (uint32_t)((current_ms - s_runtime[i].last_seen_ms) / 1000);
+            }
+            if (s_runtime[i].last_button_event_ms > 0) {
+                out->has_last_button_event = true;
+                out->last_button_event = s_runtime[i].last_button_event;
+                out->last_button_event_age_s =
+                    (uint32_t)((current_ms - s_runtime[i].last_button_event_ms) / 1000);
+            }
+            if (s_runtime[i].battery_known) {
+                out->has_battery_percent = true;
+                out->battery_percent = s_runtime[i].battery_percent;
+            }
             xSemaphoreGive(s_mutex);
             return ESP_OK;
         }
@@ -701,6 +786,8 @@ esp_err_t ble_access_device_delete(const uint8_t mac[6])
                     (s_count - i - 1) * sizeof(ble_device_t));
             memmove(&s_psa_keys[i], &s_psa_keys[i + 1],
                     (s_count - i - 1) * sizeof(psa_key_id_t));
+            memmove(&s_runtime[i], &s_runtime[i + 1],
+                    (s_count - i - 1) * sizeof(ble_device_runtime_t));
             memmove(&s_key_import_errors[i], &s_key_import_errors[i + 1],
                     (s_count - i - 1) * sizeof(bool));
             memmove(&s_decrypt_errors[i], &s_decrypt_errors[i + 1],
@@ -709,6 +796,7 @@ esp_err_t ble_access_device_delete(const uint8_t mac[6])
                     (s_count - i - 1) * sizeof(uint8_t));
             s_count--;
             s_psa_keys[s_count] = PSA_KEY_ID_NULL;
+            memset(&s_runtime[s_count], 0, sizeof(s_runtime[s_count]));
             clear_crypto_status(s_count);
             esp_err_t err = nvs_save();
             xSemaphoreGive(s_mutex);
