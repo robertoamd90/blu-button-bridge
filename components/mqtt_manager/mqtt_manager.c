@@ -75,6 +75,11 @@ static void set_status(mqtt_status_t status)
     }
 }
 
+static mqtt_status_t mqtt_error_status(void)
+{
+    return s_network_available ? MQTT_STATUS_ERROR : MQTT_STATUS_WAITING_NET;
+}
+
 // ── Event handler ──────────────────────────────────────────────────────────────
 
 static void mqtt_event_handler(void *arg, esp_event_base_t base,
@@ -96,7 +101,11 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             break;
 
         case MQTT_EVENT_DISCONNECTED:
-            set_status(s_network_available ? MQTT_STATUS_CONNECTING : MQTT_STATUS_WAITING_NET);
+            if (!s_network_available) {
+                set_status(MQTT_STATUS_WAITING_NET);
+            } else if (s_status != MQTT_STATUS_ERROR) {
+                set_status(MQTT_STATUS_CONNECTING);
+            }
             ESP_LOGW(TAG, "disconnected from broker");
             break;
 
@@ -127,7 +136,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             break;
 
         case MQTT_EVENT_ERROR:
-            set_status(s_network_available ? MQTT_STATUS_CONNECTING : MQTT_STATUS_WAITING_NET);
+            set_status(mqtt_error_status());
             ESP_LOGE(TAG, "MQTT error");
             break;
 
@@ -220,14 +229,14 @@ static void mqtt_connect_broker_locked(const char *host, uint32_t port, const ch
     set_status(MQTT_STATUS_CONNECTING);
     s_client = esp_mqtt_client_init(&cfg);
     if (!s_client) {
-        set_status(s_network_available ? MQTT_STATUS_CONNECTING : MQTT_STATUS_WAITING_NET);
+        set_status(mqtt_error_status());
         ESP_LOGE(TAG, "client init failed");
         destroy_client();
         return;
     }
     esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     if (esp_mqtt_client_start(s_client) != ESP_OK) {
-        set_status(s_network_available ? MQTT_STATUS_CONNECTING : MQTT_STATUS_WAITING_NET);
+        set_status(mqtt_error_status());
         ESP_LOGE(TAG, "client start failed");
         destroy_client();
         return;
@@ -238,7 +247,7 @@ void mqtt_connect_broker(const char *host, uint32_t port, const char *username,
                const char *password, bool use_tls)
 {
     if (!ensure_runtime_state()) {
-        set_status(s_network_available ? MQTT_STATUS_CONNECTING : MQTT_STATUS_WAITING_NET);
+        set_status(mqtt_error_status());
         ESP_LOGE(TAG, "runtime init failed");
         return;
     }
@@ -373,7 +382,7 @@ esp_err_t mqtt_action_trigger(int idx)
 void mqtt_init(void)
 {
     if (!ensure_runtime_state()) {
-        set_status(s_network_available ? MQTT_STATUS_CONNECTING : MQTT_STATUS_WAITING_NET);
+        set_status(mqtt_error_status());
         ESP_LOGE(TAG, "runtime init failed");
         return;
     }
@@ -398,16 +407,13 @@ void mqtt_init(void)
 void mqtt_set_network_available(bool available)
 {
     if (!ensure_runtime_state()) {
-        set_status(available ? MQTT_STATUS_CONNECTING : MQTT_STATUS_WAITING_NET);
+        set_status(available ? MQTT_STATUS_ERROR : MQTT_STATUS_WAITING_NET);
         ESP_LOGE(TAG, "runtime init failed");
         return;
     }
     s_network_available = available;
 
     if (!available) {
-        xSemaphoreTake(s_op_mutex, portMAX_DELAY);
-        destroy_client();
-        xSemaphoreGive(s_op_mutex);
         if (s_status != MQTT_STATUS_DISABLED) {
             char host[128] = {}, user[64] = {}, pass[64] = {};
             uint32_t port = 0;
@@ -420,7 +426,11 @@ void mqtt_set_network_available(bool available)
         return;
     }
 
-    if (s_status == MQTT_STATUS_DISABLED || s_status == MQTT_STATUS_UP || s_client) return;
+    if (s_status == MQTT_STATUS_DISABLED || s_status == MQTT_STATUS_UP) return;
+    if (s_client) {
+        set_status(MQTT_STATUS_CONNECTING);
+        return;
+    }
 
     char host[128] = {}, user[64] = {}, pass[64] = {};
     uint32_t port = 0;
@@ -440,7 +450,7 @@ void mqtt_connect_api(const char *host, uint32_t port,
                       bool password_provided)
 {
     if (!ensure_runtime_state()) {
-        set_status(s_network_available ? MQTT_STATUS_CONNECTING : MQTT_STATUS_WAITING_NET);
+        set_status(mqtt_error_status());
         ESP_LOGE(TAG, "runtime init failed");
         return;
     }

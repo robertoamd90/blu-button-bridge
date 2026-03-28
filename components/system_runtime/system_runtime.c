@@ -15,13 +15,13 @@ static void refresh_system_led(void)
         return;
     }
 
-    if (s_wifi_status == WIFI_STATUS_CONNECTING) {
+    if (s_wifi_status == WIFI_STATUS_CONNECTING || s_wifi_status == WIFI_STATUS_ERROR) {
         gpio_manager_set_system_led_mode(SYSTEM_LED_WIFI_DISCONNECTED_HINT);
         return;
     }
 
     if (s_wifi_status == WIFI_STATUS_UP &&
-            s_mqtt_status == MQTT_STATUS_CONNECTING) {
+            (s_mqtt_status == MQTT_STATUS_CONNECTING || s_mqtt_status == MQTT_STATUS_ERROR)) {
         gpio_manager_set_system_led_mode(SYSTEM_LED_MQTT_DISCONNECTED_HINT);
         return;
     }

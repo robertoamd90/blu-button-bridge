@@ -28,6 +28,7 @@ static esp_netif_t         *s_sta_netif = NULL;
 
 static void set_status(wifi_status_t status);
 static void notify_ap_status(void);
+static bool wifi_reason_is_config_error(wifi_err_reason_t reason);
 
 // AP config in RAM — ssid is overwritten at runtime by wifi_ap_load_config (MAC-based)
 static wifi_ap_settings_t s_ap_cfg = {
@@ -71,7 +72,8 @@ static void on_wifi_got_ip(void *arg, esp_event_base_t base, int32_t id, void *d
 static void reconnect_timer_cb(TimerHandle_t t)
 {
     (void)t;
-    if (s_status == WIFI_STATUS_CONNECTING) {
+    if (s_status == WIFI_STATUS_CONNECTING || s_status == WIFI_STATUS_ERROR) {
+        set_status(WIFI_STATUS_CONNECTING);
         esp_wifi_connect();
     }
 }
@@ -84,9 +86,13 @@ static void on_wifi_disconnected(void *arg, esp_event_base_t base, int32_t id, v
     wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)data;
 
     if (s_status != WIFI_STATUS_DISABLED && s_status != WIFI_STATUS_NOT_CONFIG) {
-        set_status(WIFI_STATUS_CONNECTING);
         if (!event || event->reason != WIFI_REASON_ASSOC_LEAVE) {
-            esp_wifi_connect();
+            if (event && wifi_reason_is_config_error(event->reason)) {
+                set_status(WIFI_STATUS_ERROR);
+            } else {
+                set_status(WIFI_STATUS_CONNECTING);
+                esp_wifi_connect();
+            }
             xTimerReset(s_reconnect_timer, 0);
         }
     }
@@ -111,6 +117,24 @@ static bool load_credentials(char *ssid, size_t ssid_len,
 
     nvs_close(nvs);
     return ok;
+}
+
+static bool wifi_reason_is_config_error(wifi_err_reason_t reason)
+{
+    switch (reason) {
+        case WIFI_REASON_AUTH_FAIL:
+        case WIFI_REASON_AUTH_EXPIRE:
+        case WIFI_REASON_ASSOC_FAIL:
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_NO_AP_FOUND:
+        case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+        case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+        case WIFI_REASON_ASSOC_NOT_AUTHED:
+            return true;
+        default:
+            return false;
+    }
 }
 
 static void set_device_hostname(void)

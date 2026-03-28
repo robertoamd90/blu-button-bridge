@@ -9,6 +9,7 @@
     X(DISABLED,    "disabled")    \
     X(WAITING_NET, "waiting net") \
     X(CONNECTING,  "connecting")  \
+    X(ERROR,       "error")       \
     X(UP,          "up")
 
 typedef enum {

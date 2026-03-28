@@ -7,6 +7,7 @@
     X(NOT_CONFIG, "not config") \
     X(DISABLED,   "disabled")   \
     X(CONNECTING, "connecting") \
+    X(ERROR,      "error")      \
     X(UP,         "up")
 
 typedef enum {
