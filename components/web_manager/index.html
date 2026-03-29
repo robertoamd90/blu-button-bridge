@@ -1060,22 +1060,20 @@
       toast('toast-gh-update', false, 'Check for updates first');
       return;
     }
-    if (!confirm(`Install ${_githubUpdateInfo.latest_version} from GitHub and reboot?`)) return;
+    if (!confirm(`Install ${_githubUpdateInfo.latest_version} from GitHub? The device will reboot into OTA mode, update itself, and reboot again when finished.`)) return;
 
-    toast('toast-gh-update', true, 'Downloading and verifying update…');
-    let ok = false;
+    toast('toast-gh-update', true, 'Staging update and rebooting into OTA mode…');
     try {
       const d = await api('/api/system/update', 'POST', {});
-      if (d.ok) {
-        toast('toast-gh-update', true, 'Update complete, rebooting…');
-        ok = true;
-      } else {
+      if (!d.ok) {
         toast('toast-gh-update', false, d.error || 'Update failed');
+        return;
       }
+      toast('toast-gh-update', true, 'Rebooting into OTA mode… reconnect in about 30 seconds');
+      setTimeout(() => location.reload(), 30000);
     } catch(e) {
       toast('toast-gh-update', false, 'Update failed — check the network connection');
     }
-    if (ok) setTimeout(() => location.reload(), 8000);
   }
 
   async function otaUpload() {
