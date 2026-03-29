@@ -5,6 +5,7 @@
 #include "web_manager.h"
 #include "ble_access.h"
 #include "gpio_manager.h"
+#include "system_runtime.h"
 
 // ── app_main ──────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ void app_main(void)
     gpio_manager_init();
     wifi_init();
     mqtt_init();
+    system_runtime_init();
     ble_access_init();
     web_manager_init();
 }

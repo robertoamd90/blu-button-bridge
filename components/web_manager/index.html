@@ -370,7 +370,7 @@
   function dotClass(val) {
     const v = val.toUpperCase();
     if (v === 'UP' || v === 'SCANNING') return 'up';
-    if (v === 'ERROR' || v === 'PAUSED' || v === 'STARTING') return 'warn';
+    if (v === 'CONNECTING' || v === 'WAITING NET' || v === 'PAUSED' || v === 'STARTING') return 'warn';
     return 'down';
   }
 

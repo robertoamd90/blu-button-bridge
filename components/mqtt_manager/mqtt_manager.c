@@ -3,7 +3,6 @@
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/portmacro.h"
 #include "mqtt_client.h"
@@ -11,7 +10,6 @@
 #include "esp_log.h"
 #include "mqtt_manager.h"
 
-#define MQTT_CONNECTED_BIT  BIT0
 #define MQTT_MAX_SUBS       8
 #define MQTT_MAX_TOPIC_LEN  128
 #define MQTT_MAX_PAYLOAD    1024
@@ -23,12 +21,12 @@ typedef struct {
     mqtt_message_cb_t cb;
 } mqtt_sub_t;
 
-static esp_mqtt_client_handle_t s_client   = NULL;
-static EventGroupHandle_t       s_events   = NULL;
-static volatile mqtt_status_t   s_status   = MQTT_STATUS_NOT_CONFIG;
+static esp_mqtt_client_handle_t s_client = NULL;
+static volatile mqtt_status_t   s_status = MQTT_STATUS_NOT_CONFIG;
 static bool                     s_stopping = false;
+static bool                     s_network_available = false;
 static mqtt_sub_t               s_subs[MQTT_MAX_SUBS];
-static int                      s_nsubs    = 0;
+static int                      s_nsubs = 0;
 static mqtt_status_cb_t         s_status_cb = NULL;
 static SemaphoreHandle_t        s_op_mutex = NULL;
 static SemaphoreHandle_t        s_actions_mutex = NULL;
@@ -77,6 +75,11 @@ static void set_status(mqtt_status_t status)
     }
 }
 
+static mqtt_status_t mqtt_error_status(void)
+{
+    return s_network_available ? MQTT_STATUS_ERROR : MQTT_STATUS_WAITING_NET;
+}
+
 // ── Event handler ──────────────────────────────────────────────────────────────
 
 static void mqtt_event_handler(void *arg, esp_event_base_t base,
@@ -89,7 +92,6 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
     switch (event_id) {
         case MQTT_EVENT_CONNECTED:
             set_status(MQTT_STATUS_UP);
-            xEventGroupSetBits(s_events, MQTT_CONNECTED_BIT);
             ESP_LOGI(TAG, "connected to broker");
             xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
             for (int i = 0; i < s_nsubs; i++) {
@@ -99,9 +101,11 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             break;
 
         case MQTT_EVENT_DISCONNECTED:
-            if (s_status == MQTT_STATUS_UP)
-                set_status(MQTT_STATUS_DOWN);
-            xEventGroupClearBits(s_events, MQTT_CONNECTED_BIT);
+            if (!s_network_available) {
+                set_status(MQTT_STATUS_WAITING_NET);
+            } else if (s_status != MQTT_STATUS_ERROR) {
+                set_status(MQTT_STATUS_CONNECTING);
+            }
             ESP_LOGW(TAG, "disconnected from broker");
             break;
 
@@ -132,7 +136,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             break;
 
         case MQTT_EVENT_ERROR:
-            set_status(MQTT_STATUS_ERROR);
+            set_status(mqtt_error_status());
             ESP_LOGE(TAG, "MQTT error");
             break;
 
@@ -150,10 +154,6 @@ static void destroy_client(void)
         esp_mqtt_client_destroy(s_client);
         s_client = NULL;
         s_stopping = false;
-    }
-    if (s_events) {
-        vEventGroupDelete(s_events);
-        s_events = NULL;
     }
 }
 
@@ -193,18 +193,25 @@ static bool load_credentials(char *host, size_t host_len,
     return ok;
 }
 
+static bool load_saved_config(char *host, size_t host_len,
+                              uint32_t *port, char *user, size_t user_len,
+                              char *pass, size_t pass_len, bool *use_tls)
+{
+    char port_str[8] = {};
+    if (!load_credentials(host, host_len, port_str, sizeof(port_str),
+                          user, user_len, pass, pass_len, use_tls)) {
+        return false;
+    }
+    if (port) *port = (uint32_t)atoi(port_str);
+    return true;
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 static void mqtt_connect_broker_locked(const char *host, uint32_t port, const char *username,
                                        const char *password, bool use_tls)
 {
     destroy_client();
-    s_events = xEventGroupCreate();
-    if (!s_events) {
-        set_status(MQTT_STATUS_ERROR);
-        ESP_LOGE(TAG, "event group allocation failed");
-        return;
-    }
 
     esp_mqtt_client_config_t cfg = {
         .broker.address.hostname      = host,
@@ -219,27 +226,20 @@ static void mqtt_connect_broker_locked(const char *host, uint32_t port, const ch
         .network.timeout_ms           = 5000,
     };
 
-    set_status(MQTT_STATUS_DOWN);
+    set_status(MQTT_STATUS_CONNECTING);
     s_client = esp_mqtt_client_init(&cfg);
     if (!s_client) {
-        set_status(MQTT_STATUS_ERROR);
+        set_status(mqtt_error_status());
         ESP_LOGE(TAG, "client init failed");
         destroy_client();
         return;
     }
     esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     if (esp_mqtt_client_start(s_client) != ESP_OK) {
-        set_status(MQTT_STATUS_ERROR);
+        set_status(mqtt_error_status());
         ESP_LOGE(TAG, "client start failed");
         destroy_client();
         return;
-    }
-
-    EventBits_t bits = xEventGroupWaitBits(s_events, MQTT_CONNECTED_BIT,
-                                           false, true, pdMS_TO_TICKS(10000));
-    if (!(bits & MQTT_CONNECTED_BIT)) {
-        set_status(MQTT_STATUS_ERROR);
-        ESP_LOGE(TAG, "broker connection timeout");
     }
 }
 
@@ -247,7 +247,7 @@ void mqtt_connect_broker(const char *host, uint32_t port, const char *username,
                const char *password, bool use_tls)
 {
     if (!ensure_runtime_state()) {
-        set_status(MQTT_STATUS_ERROR);
+        set_status(mqtt_error_status());
         ESP_LOGE(TAG, "runtime init failed");
         return;
     }
@@ -382,7 +382,7 @@ esp_err_t mqtt_action_trigger(int idx)
 void mqtt_init(void)
 {
     if (!ensure_runtime_state()) {
-        set_status(MQTT_STATUS_ERROR);
+        set_status(mqtt_error_status());
         ESP_LOGE(TAG, "runtime init failed");
         return;
     }
@@ -393,16 +393,56 @@ void mqtt_init(void)
         xSemaphoreGive(s_actions_mutex);
         s_actions_loaded = true;
     }
-    if (s_status == MQTT_STATUS_UP) return;
 
     char host[128] = {}, port_str[8] = {}, user[64] = {}, pass[64] = {};
     bool use_tls = false;
-
     if (load_credentials(host, sizeof(host), port_str, sizeof(port_str),
                          user, sizeof(user), pass, sizeof(pass), &use_tls)) {
-        ESP_LOGI(TAG, "connecting to %s:%s%s", host, port_str, use_tls ? " (TLS)" : "");
-        mqtt_connect_broker(host, (uint32_t)atoi(port_str), user, pass, use_tls);
+        set_status(MQTT_STATUS_WAITING_NET);
+    } else {
+        set_status(MQTT_STATUS_NOT_CONFIG);
     }
+}
+
+void mqtt_set_network_available(bool available)
+{
+    if (!ensure_runtime_state()) {
+        set_status(available ? MQTT_STATUS_ERROR : MQTT_STATUS_WAITING_NET);
+        ESP_LOGE(TAG, "runtime init failed");
+        return;
+    }
+    s_network_available = available;
+
+    if (!available) {
+        if (s_status != MQTT_STATUS_DISABLED) {
+            char host[128] = {}, user[64] = {}, pass[64] = {};
+            uint32_t port = 0;
+            bool use_tls = false;
+            set_status(load_saved_config(host, sizeof(host), &port, user, sizeof(user),
+                                         pass, sizeof(pass), &use_tls)
+                           ? MQTT_STATUS_WAITING_NET
+                           : MQTT_STATUS_NOT_CONFIG);
+        }
+        return;
+    }
+
+    if (s_status == MQTT_STATUS_DISABLED || s_status == MQTT_STATUS_UP) return;
+    if (s_client) {
+        set_status(MQTT_STATUS_CONNECTING);
+        return;
+    }
+
+    char host[128] = {}, user[64] = {}, pass[64] = {};
+    uint32_t port = 0;
+    bool use_tls = false;
+    if (!load_saved_config(host, sizeof(host), &port, user, sizeof(user),
+                           pass, sizeof(pass), &use_tls)) {
+        set_status(MQTT_STATUS_NOT_CONFIG);
+        return;
+    }
+
+    ESP_LOGI(TAG, "connecting to %s:%" PRIu32 "%s", host, port, use_tls ? " (TLS)" : "");
+    mqtt_connect_broker(host, port, user, pass, use_tls);
 }
 
 void mqtt_connect_api(const char *host, uint32_t port,
@@ -410,7 +450,7 @@ void mqtt_connect_api(const char *host, uint32_t port,
                       bool password_provided)
 {
     if (!ensure_runtime_state()) {
-        set_status(MQTT_STATUS_ERROR);
+        set_status(mqtt_error_status());
         ESP_LOGE(TAG, "runtime init failed");
         return;
     }
@@ -444,7 +484,12 @@ void mqtt_connect_api(const char *host, uint32_t port,
         nvs_commit(nvs);
         nvs_close(nvs);
     }
-    mqtt_connect_broker_locked(host, port, username, pass_to_use, use_tls);
+    if (s_network_available) {
+        mqtt_connect_broker_locked(host, port, username, pass_to_use, use_tls);
+    } else {
+        destroy_client();
+        set_status(MQTT_STATUS_WAITING_NET);
+    }
     xSemaphoreGive(s_op_mutex);
 }
 
