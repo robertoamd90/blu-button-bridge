@@ -28,7 +28,7 @@ Press a Shelly button → the ESP32 receives the encrypted BLE advertisement, de
 | **MQTT** | Configurable broker (host, port, user/pass, optional TLS); up to 16 named publish actions (topic + payload); QoS 1; auto-reconnect |
 | **GPIO** | Up to 16 output actions; configurable pin, idle state, active level, action type (set on / set off / toggle), auto-restore delay |
 | **WiFi** | STA + SoftAP coexistence; captive-portal DNS for first-time setup; auto-reconnect (5 s retry); WPA2-PSK on AP |
-| **Web UI** | Single-page app served from the ESP32; tabs for WiFi, MQTT, GPIO, BLE, System; real-time status bar; mobile-friendly; optional browser-native HTTP Basic Auth |
+| **Web UI** | Single-page app served from the ESP32; tabs for WiFi, MQTT, GPIO, BLE, System; real-time status bar; mobile-friendly; optional browser-native HTTP Basic Auth; live serial console in the browser |
 | **System** | OTA firmware update via file upload or manual GitHub release check/install with SHA-256 verification; full config backup/restore (JSON, including Basic Auth settings stored as password hash); reboot and factory-reset from the UI; NVS persistence across reboots |
 
 ---
@@ -104,7 +104,9 @@ blu-button-bridge/
 │   ├── wifi_manager/           # STA + SoftAP, captive portal DNS, credentials
 │   ├── mqtt_manager/           # MQTT client, named publish actions
 │   ├── gpio_manager/           # GPIO output actions, system LED
-│   └── web_manager/            # HTTP server, REST API, embedded index.html
+│   ├── system_runtime/         # Runtime wiring for WiFi, MQTT, and system LED
+│   ├── console_manager/        # In-memory serial log capture for the web console
+│   └── web_manager/            # HTTP server, REST API, embedded index.html + console.html
 ├── partitions.csv              # Custom partition table (NVS + OTA_0 + OTA_1)
 ├── sdkconfig                   # ESP-IDF configuration
 └── CMakeLists.txt
@@ -128,9 +130,11 @@ blu-button-bridge/
 ```
 app_main()
   ├── nvs_flash_init()          # NVS with auto-recovery on corruption
+  ├── console_manager_init()    # Capture serial logs into an in-memory backlog
   ├── gpio_manager_init()       # System LED + load GPIO actions from NVS
   ├── wifi_init()               # Load credentials, start AP if unconfigured
-  ├── mqtt_init()               # Auto-connect if broker configured
+  ├── mqtt_init()               # Load broker config and wait for network availability
+  ├── system_runtime_init()     # Wire WiFi/MQTT state changes and LED policy
   ├── ble_access_init()         # NimBLE + PSA crypto, load devices, start scan
   └── web_manager_init()        # HTTP server on port 80
 ```
@@ -204,8 +208,8 @@ Each event independently maps to a 16-bit bitmask for MQTT actions and a 16-bit 
 ### STA mode
 
 - Connects to saved SSID/password from NVS
+- Connects asynchronously during boot so the rest of the firmware can continue starting
 - Auto-reconnect with 5-second retry timer on disconnect or failure
-- 10-second connection timeout
 
 ### AP mode (SoftAP)
 
@@ -230,7 +234,8 @@ A disclaimer in the web UI reminds users that BLE scanning is paused while the A
 ## MQTT
 
 - Configurable broker: host, port, username, password, optional TLS/SSL
-- Auto-reconnect on disconnect (2 s timeout)
+- Connection attempts start only when WiFi is available
+- Auto-reconnect on disconnect (2 s retry interval in the MQTT client)
 - **Up to 16 publish actions**, each with a name, topic, and payload
 - Actions are triggered by BLE button events through per-device bitmasks
 - QoS 1 for reliable delivery
@@ -258,8 +263,16 @@ Served directly from the ESP32 on port 80 — no external dependencies.
 | **WiFi** | Connect to a network, scan nearby APs, manage AP settings, clear credentials |
 | **MQTT** | Configure broker, manage publish actions (add / edit / delete / test) |
 | **GPIO** | Manage GPIO output actions (add / edit / delete / test), pin validation |
-| **BLE** | List devices, register new devices, assign events to actions, manage keys |
-| **System** | GitHub/manual OTA update, optional Basic Auth config, config backup & restore, reboot, factory reset |
+| **BLE** | List devices, register new devices, assign events to actions, manage keys, inspect last-seen/event/battery telemetry |
+| **System** | GitHub/manual OTA update, optional Basic Auth config, live web console, config backup & restore, reboot, factory reset |
+
+### Live web console
+
+- Opened from the **System** tab at `/console`
+- Streams ESP32 serial logs to the browser using Server-Sent Events (SSE)
+- Shows an in-memory backlog immediately on connect, then live lines
+- Only the newest open console tab remains attached to the live stream
+- `Clear View` is client-side only and does not erase the device-side backlog
 
 ### Status bar
 
