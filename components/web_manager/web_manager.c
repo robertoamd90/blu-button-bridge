@@ -22,6 +22,7 @@
 #include "mqtt_manager.h"
 #include "gpio_manager.h"
 #include "web_manager.h"
+#include "ota_manager.h"
 #include "ble_access.h"
 #include "console_manager.h"
 
@@ -275,13 +276,7 @@ typedef struct {
     int asset_size;
 } github_release_info_t;
 
-typedef struct {
-    esp_ota_handle_t ota;
-    mbedtls_md_context_t sha_ctx;
-    bool sha_started;
-    size_t bytes_written;
-    esp_err_t stream_err;
-} ota_download_ctx_t;
+static github_release_info_t s_last_github_release = {0};
 
 typedef struct {
     httpd_req_t *req;
@@ -392,52 +387,6 @@ static esp_err_t http_buffer_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
-static esp_err_t ota_download_event_handler(esp_http_client_event_t *evt)
-{
-    ota_download_ctx_t *ctx = (ota_download_ctx_t *)evt->user_data;
-    if (!ctx) return ESP_OK;
-
-    if (evt->event_id != HTTP_EVENT_ON_DATA || evt->data_len <= 0) return ESP_OK;
-
-    int status = esp_http_client_get_status_code(evt->client);
-    if (status != 200) return ESP_OK;
-
-    if (!ctx->sha_started) {
-        const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-        if (!md_info) {
-            ctx->stream_err = ESP_FAIL;
-            return ESP_FAIL;
-        }
-        mbedtls_md_init(&ctx->sha_ctx);
-        if (mbedtls_md_setup(&ctx->sha_ctx, md_info, 0) != 0 || mbedtls_md_starts(&ctx->sha_ctx) != 0) {
-            mbedtls_md_free(&ctx->sha_ctx);
-            ctx->stream_err = ESP_FAIL;
-            return ESP_FAIL;
-        }
-        ctx->sha_started = true;
-    }
-
-    if (mbedtls_md_update(&ctx->sha_ctx, (const unsigned char *)evt->data, evt->data_len) != 0) {
-        ctx->stream_err = ESP_FAIL;
-        return ESP_FAIL;
-    }
-
-    esp_err_t err = esp_ota_write(ctx->ota, evt->data, evt->data_len);
-    if (err != ESP_OK) {
-        ctx->stream_err = err;
-        return err;
-    }
-
-    ctx->bytes_written += (size_t)evt->data_len;
-    return ESP_OK;
-}
-
-static void sha256_digest_to_hex(const unsigned char digest[32], char *out_hex, size_t out_len)
-{
-    if (!out_hex || out_len < 65) return;
-    for (int i = 0; i < 32; i++) snprintf(out_hex + (i * 2), out_len - (size_t)(i * 2), "%02x", digest[i]);
-}
-
 static esp_err_t github_http_get_json(const char *url, http_buffer_t *buffer)
 {
     if (!url || !buffer) return ESP_ERR_INVALID_ARG;
@@ -527,78 +476,6 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
     cJSON_Delete(root);
     return found_asset ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
-
-static esp_err_t ota_install_from_github_release(const github_release_info_t *info)
-{
-    if (!info || info->download_url[0] == '\0' || info->digest_hex[0] == '\0') return ESP_ERR_INVALID_ARG;
-
-    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
-    if (!part) return ESP_ERR_NOT_FOUND;
-
-    esp_ota_handle_t ota;
-    esp_err_t err = esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota);
-    if (err != ESP_OK) return err;
-
-    ota_download_ctx_t ctx = {
-        .ota = ota,
-        .stream_err = ESP_OK,
-    };
-
-    esp_http_client_config_t cfg = {
-        .url = info->download_url,
-        .method = HTTP_METHOD_GET,
-        .timeout_ms = 15000,
-        .buffer_size = GITHUB_HTTP_BUFFER_SIZE,
-        .buffer_size_tx = GITHUB_HTTP_TX_BUFFER_SIZE,
-        .max_redirection_count = GITHUB_HTTP_MAX_REDIRECTS,
-        .event_handler = ota_download_event_handler,
-        .user_data = &ctx,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) {
-        esp_ota_abort(ota);
-        return ESP_ERR_NO_MEM;
-    }
-
-    esp_http_client_set_header(client, "User-Agent", "BluButtonBridge");
-
-    err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
-    if (err != ESP_OK || ctx.stream_err != ESP_OK || status != 200 || ctx.bytes_written == 0) {
-        if (ctx.sha_started) mbedtls_md_free(&ctx.sha_ctx);
-        esp_ota_abort(ota);
-        return (ctx.stream_err != ESP_OK) ? ctx.stream_err : ESP_FAIL;
-    }
-
-    unsigned char digest[32];
-    char actual_hex[65];
-    if (!ctx.sha_started || mbedtls_md_finish(&ctx.sha_ctx, digest) != 0) {
-        if (ctx.sha_started) mbedtls_md_free(&ctx.sha_ctx);
-        esp_ota_abort(ota);
-        return ESP_FAIL;
-    }
-    mbedtls_md_free(&ctx.sha_ctx);
-
-    sha256_digest_to_hex(digest, actual_hex, sizeof(actual_hex));
-    if (strcmp(actual_hex, info->digest_hex) != 0) {
-        ESP_LOGW(TAG, "GitHub OTA digest mismatch: expected %s got %s", info->digest_hex, actual_hex);
-        esp_ota_abort(ota);
-        return ESP_ERR_INVALID_CRC;
-    }
-
-    err = esp_ota_end(ota);
-    if (err != ESP_OK) return err;
-
-    err = esp_ota_set_boot_partition(part);
-    if (err != ESP_OK) return err;
-
-    return ESP_OK;
-}
-
 // ── Async background tasks (WiFi/MQTT connect without blocking the HTTP path) ─
 
 typedef struct { char ssid[33]; char pass[65]; bool has_pass; } wifi_creds_t;
@@ -1733,6 +1610,7 @@ static esp_err_t handle_update_check(httpd_req_t *req)
     cJSON_AddStringToObject(obj, "release_url", release.html_url);
     cJSON_AddStringToObject(obj, "asset_name", GITHUB_ASSET_NAME);
     cJSON_AddNumberToObject(obj, "asset_size", release.asset_size);
+    s_last_github_release = release;
     send_cjson(req, obj);
     return ESP_OK;
 }
@@ -1746,16 +1624,17 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
         return send_error(req, "empty firmware image");
     }
 
-    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
-    if (!part) { ota_unlock(); return send_error(req, "no OTA partition"); }
-    if ((size_t)req->content_len > part->size) {
+    ota_upload_session_t *session = NULL;
+    esp_err_t err = ota_manager_upload_begin((size_t)req->content_len, &session);
+    if (err == ESP_ERR_NOT_FOUND) {
+        ota_unlock();
+        return send_error(req, "no OTA partition");
+    }
+    if (err == ESP_ERR_INVALID_SIZE) {
         ota_unlock();
         return send_error_status(req, "413 Payload Too Large",
                                  "firmware image too large for OTA partition");
     }
-
-    esp_ota_handle_t ota;
-    esp_err_t err = esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota);
     if (err != ESP_OK) { ota_unlock(); return send_error(req, "OTA begin failed"); }
 
     char buf[1024];
@@ -1763,29 +1642,23 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
     while (remaining > 0) {
         int n = httpd_req_recv(req, buf, remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf));
         if (n <= 0) {
-            esp_ota_abort(ota);
+            ota_manager_upload_abort(session);
             ota_unlock();
             return send_error(req, "receive error");
         }
-        err = esp_ota_write(ota, buf, n);
+        err = ota_manager_upload_write(session, buf, (size_t)n);
         if (err != ESP_OK) {
-            esp_ota_abort(ota);
+            ota_manager_upload_abort(session);
             ota_unlock();
             return send_error(req, "OTA write failed");
         }
         remaining -= n;
     }
 
-    err = esp_ota_end(ota);
+    err = ota_manager_upload_finish(session);
     if (err != ESP_OK) {
         ota_unlock();
         return send_error_status(req, "422 Unprocessable Entity", "OTA validation failed");
-    }
-
-    err = esp_ota_set_boot_partition(part);
-    if (err != ESP_OK) {
-        ota_unlock();
-        return send_error(req, "set boot partition failed");
     }
 
     ota_unlock();
@@ -1794,35 +1667,26 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
-// POST /api/system/update
 static esp_err_t handle_update_install(httpd_req_t *req)
 {
-    (void)req;
     if (!ota_try_lock()) return send_error(req, "another OTA operation is already in progress");
 
-    const esp_app_desc_t *app = esp_app_get_description();
-    github_release_info_t release;
-    esp_err_t err = github_fetch_latest_release(&release);
-    if (err == ESP_ERR_NOT_FOUND) {
+    if (!s_last_github_release.download_url[0] || !s_last_github_release.tag[0]) {
         ota_unlock();
-        return send_error(req, "latest release is missing BluButtonBridge.bin or its sha256 digest");
-    }
-    if (err != ESP_OK) {
-        ota_unlock();
-        return send_error(req, "could not fetch latest GitHub release");
+        return send_error(req, "check for updates first");
     }
 
-    if (compare_versions_for_update(release.tag, app->version) <= 0) {
+    const esp_app_desc_t *app = esp_app_get_description();
+    if (compare_versions_for_update(s_last_github_release.tag, app->version) <= 0) {
         ota_unlock();
         return send_error(req, "no newer GitHub release is available");
     }
 
-    ESP_LOGI(TAG, "Installing GitHub release %s from %s", release.version_label, release.download_url);
-    err = ota_install_from_github_release(&release);
+    esp_err_t err = ota_manager_stage_github_job(s_last_github_release.version_label,
+                                                 s_last_github_release.download_url,
+                                                 s_last_github_release.digest_hex);
     ota_unlock();
-
-    if (err == ESP_ERR_INVALID_CRC) return send_error(req, "firmware digest verification failed");
-    if (err != ESP_OK) return send_error(req, "GitHub OTA download failed");
+    if (err != ESP_OK) return send_error(req, "could not stage GitHub OTA");
 
     send_json(req, "{\"ok\":true}");
     xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
@@ -2220,27 +2084,15 @@ void web_manager_init(void)
         return;
     }
     auth_load_config();
-    if (!s_ota_mutex) s_ota_mutex = xSemaphoreCreateMutex();
+    if (!s_ota_mutex) {
+        s_ota_mutex = xSemaphoreCreateMutex();
+    }
     if (!s_ota_mutex) {
         ESP_LOGE(TAG, "Failed to create OTA mutex");
         return;
     }
 
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.stack_size        = 10240;
-    config.max_uri_handlers  = 44;
-    config.max_open_sockets  = 4;
-    config.lru_purge_enable  = true;
-    config.uri_match_fn      = httpd_uri_match_wildcard;
-
-    httpd_handle_t server = NULL;
-    if (httpd_start(&server, &config) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start HTTP server");
-        return;
-    }
-
-    static route_ctx_t route_ctxs[46];
-    const route_def_t routes[] = {
+    static const route_def_t routes[] = {
         { .uri = "/",                         .method = HTTP_GET,    .handler = handle_root,                .auth_required = true },
         { .uri = "/console",                  .method = HTTP_GET,    .handler = handle_console_page,        .auth_required = true },
         { .uri = "/api/console/stream",       .method = HTTP_GET,    .handler = handle_console_stream,      .auth_required = true },
@@ -2286,8 +2138,23 @@ void web_manager_init(void)
         { .uri = "/api/ble/device",           .method = HTTP_DELETE, .handler = handle_ble_device_delete,   .auth_required = true },
         { .uri = "/*",                        .method = HTTP_GET,    .handler = handle_captive,             .auth_required = true },
     };
+    enum { ROUTE_COUNT = sizeof(routes) / sizeof(routes[0]) };
+    static route_ctx_t route_ctxs[ROUTE_COUNT];
 
-    for (int i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.stack_size        = 10240;
+    config.max_uri_handlers  = ROUTE_COUNT;
+    config.max_open_sockets  = 4;
+    config.lru_purge_enable  = true;
+    config.uri_match_fn      = httpd_uri_match_wildcard;
+
+    httpd_handle_t server = NULL;
+    if (httpd_start(&server, &config) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start HTTP server");
+        return;
+    }
+
+    for (size_t i = 0; i < ROUTE_COUNT; i++) {
         route_ctxs[i].inner = routes[i].handler;
         route_ctxs[i].auth_required = routes[i].auth_required;
         httpd_uri_t uri = {

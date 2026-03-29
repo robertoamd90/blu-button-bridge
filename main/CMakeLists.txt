@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS "app_main.c"
     INCLUDE_DIRS "."
-    REQUIRES wifi_manager mqtt_manager web_manager ble_access gpio_manager system_runtime console_manager
+    REQUIRES wifi_manager mqtt_manager web_manager ble_access gpio_manager system_runtime console_manager ota_manager
     PRIV_REQUIRES nvs_flash esp_driver_gpio
 )

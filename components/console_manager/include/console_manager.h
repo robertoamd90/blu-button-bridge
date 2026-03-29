@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CONSOLE_MANAGER_MAX_LINES      128
+#define CONSOLE_MANAGER_MAX_LINES      64
 #define CONSOLE_MANAGER_MAX_LINE_LEN   192
 
 typedef struct {
