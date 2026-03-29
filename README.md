@@ -29,7 +29,7 @@ Press a Shelly button → the ESP32 receives the encrypted BLE advertisement, de
 | **GPIO** | Up to 16 output actions; configurable pin, idle state, active level, action type (set on / set off / toggle), auto-restore delay |
 | **WiFi** | STA + SoftAP coexistence; captive-portal DNS for first-time setup; auto-reconnect (5 s retry); WPA2-PSK on AP |
 | **Web UI** | Single-page app served from the ESP32; tabs for WiFi, MQTT, GPIO, BLE, System; real-time status bar; mobile-friendly; optional browser-native HTTP Basic Auth; live serial console in the browser |
-| **System** | OTA firmware update via file upload or manual GitHub release check/install with SHA-256 verification; full config backup/restore (JSON, including Basic Auth settings stored as password hash); reboot and factory-reset from the UI; NVS persistence across reboots |
+| **System** | OTA firmware update via manual file upload or staged GitHub release install with SHA-256 verification and reboot into safe OTA mode; full config backup/restore (JSON, including Basic Auth settings stored as password hash); reboot and factory-reset from the UI; NVS persistence across reboots |
 
 ---
 
@@ -106,6 +106,7 @@ blu-button-bridge/
 │   ├── gpio_manager/           # GPIO output actions, system LED
 │   ├── system_runtime/         # Runtime wiring for WiFi, MQTT, and system LED
 │   ├── console_manager/        # In-memory serial log capture for the web console
+│   ├── ota_manager/            # OTA domain: staged GitHub OTA mode + manual upload install
 │   └── web_manager/            # HTTP server, REST API, embedded index.html + console.html
 ├── partitions.csv              # Custom partition table (NVS + OTA_0 + OTA_1)
 ├── sdkconfig                   # ESP-IDF configuration
@@ -122,6 +123,7 @@ blu-button-bridge/
 | `ble_access` | Registered devices (MAC, key, label, event masks, counter) |
 | `gpio` | GPIO output actions |
 | `http_auth` | Optional HTTP Basic Auth config |
+| `ota_manager` | Staged GitHub OTA job state (`status`, `attempts`, `last_error`, version/url/digest) |
 
 ---
 
@@ -133,6 +135,8 @@ app_main()
   ├── console_manager_init()    # Capture serial logs into an in-memory backlog
   ├── gpio_manager_init()       # System LED + load GPIO actions from NVS
   ├── wifi_init()               # Load credentials, start AP if unconfigured
+  ├── ota_manager_start_pending_job()
+  │    └── if a GitHub OTA job is staged, take over this boot in OTA mode
   ├── mqtt_init()               # Load broker config and wait for network availability
   ├── system_runtime_init()     # Wire WiFi/MQTT state changes and LED policy
   ├── ble_access_init()         # NimBLE + PSA crypto, load devices, start scan
@@ -264,7 +268,7 @@ Served directly from the ESP32 on port 80 — no external dependencies.
 | **MQTT** | Configure broker, manage publish actions (add / edit / delete / test) |
 | **GPIO** | Manage GPIO output actions (add / edit / delete / test), pin validation |
 | **BLE** | List devices, register new devices, assign events to actions, manage keys, inspect last-seen/event/battery telemetry |
-| **System** | GitHub/manual OTA update, optional Basic Auth config, live web console, config backup & restore, reboot, factory reset |
+| **System** | GitHub OTA staging + safe OTA-mode reboot, manual OTA upload, optional Basic Auth config, live web console, config backup & restore, reboot, factory reset |
 
 ### Live web console
 
@@ -347,7 +351,7 @@ All endpoints are served on port 80 with JSON payloads.
 | GET | `/api/system/auth` | Read Basic Auth status / username |
 | POST | `/api/system/auth` | Save Basic Auth settings `{enabled, username, password}` |
 | GET | `/api/system/update/check` | Check latest public GitHub release |
-| POST | `/api/system/update` | Download, verify, and install latest GitHub release |
+| POST | `/api/system/update` | Stage the latest checked GitHub release and reboot into OTA mode |
 | POST | `/api/system/ota` | Upload firmware binary manually (OTA update) |
 | GET | `/api/system/config` | Download full configuration (JSON, including Basic Auth hash) |
 | POST | `/api/system/config` | Restore configuration from JSON and reboot |
@@ -404,7 +408,7 @@ If flash hangs on `Connecting...`, hold the **BOOT** button on the ESP32 until i
 | Port busy | Monitor open elsewhere | Close monitor with Ctrl+T Ctrl+X |
 | Build fails after fullclean | Target not set | `idf.py set-target esp32` then build |
 | Can't connect to AP WiFi | BLE scan running | AP stops BLE scan automatically; if issue persists, reboot |
-| GitHub OTA fails with TLS / download errors | Device has no internet access or release asset metadata is missing | Confirm STA connectivity, public GitHub access, and that the latest release includes `BluButtonBridge.bin` with a GitHub-provided SHA-256 digest |
+| GitHub OTA fails with TLS / download errors | Device has no internet access or release asset metadata is missing | Confirm STA connectivity, public GitHub access, and that the latest release includes `BluButtonBridge.bin` with a GitHub-provided SHA-256 digest; failed OTA mode boots return to the normal firmware path on the next restart |
 | BLE device not decrypting | Wrong key or key out of sync | Check key in Shelly app; re-register or update key via UI |
 | `event=0` in BLE log | Normal button release beacon | No action expected — this is idle/release state |
 | WiFi stays in ERROR | Connection failed, no retry | Fixed in firmware; should auto-retry every 5 s |
