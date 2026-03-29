@@ -7,6 +7,7 @@
 #include "mbedtls/md.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_err.h"
 #include "esp_system.h"
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
@@ -231,6 +232,16 @@ static esp_err_t send_error(httpd_req_t *req, const char *msg)
     cJSON_AddBoolToObject(obj, "ok", false);
     cJSON_AddStringToObject(obj, "error", msg);
     httpd_resp_set_status(req, "400 Bad Request");
+    send_cjson(req, obj);
+    return ESP_OK;
+}
+
+static esp_err_t send_error_status(httpd_req_t *req, const char *status, const char *msg)
+{
+    cJSON *obj = cJSON_CreateObject();
+    cJSON_AddBoolToObject(obj, "ok", false);
+    cJSON_AddStringToObject(obj, "error", msg);
+    httpd_resp_set_status(req, status);
     send_cjson(req, obj);
     return ESP_OK;
 }
@@ -850,7 +861,11 @@ static void reboot_task(void *arg)
 static void factory_reset_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS(300));
-    nvs_flash_erase(); // wipes all NVS: WiFi, MQTT, AP config, BLE
+    esp_err_t err = nvs_flash_erase(); // wipes all NVS: WiFi, MQTT, AP config, BLE
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset failed: %s", esp_err_to_name(err));
+        vTaskDelete(NULL);
+    }
     esp_restart();
 }
 
@@ -1291,8 +1306,7 @@ static esp_err_t handle_gpio_action_delete(httpd_req_t *req)
 // GET /api/ble/devices
 static esp_err_t handle_ble_devices(httpd_req_t *req)
 {
-    ble_device_t *devs = malloc(BLE_ACCESS_MAX_DEVICES * sizeof(ble_device_t));
-    if (!devs) return send_error(req, "out of memory");
+    ble_device_t devs[BLE_ACCESS_MAX_DEVICES];
     int n = ble_access_get_devices(devs, BLE_ACCESS_MAX_DEVICES);
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < n; i++) {
@@ -1335,7 +1349,6 @@ static esp_err_t handle_ble_devices(httpd_req_t *req)
             cJSON_AddNullToObject(obj, "last_button_event_age_s");
         cJSON_AddItemToArray(arr, obj);
     }
-    free(devs);
     send_cjson(req, arr);
     return ESP_OK;
 }
@@ -1585,9 +1598,18 @@ static esp_err_t handle_update_check(httpd_req_t *req)
 static esp_err_t handle_ota_upload(httpd_req_t *req)
 {
     if (!ota_try_lock()) return send_error(req, "another OTA operation is already in progress");
+    if (req->content_len <= 0) {
+        ota_unlock();
+        return send_error(req, "empty firmware image");
+    }
 
     const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
     if (!part) { ota_unlock(); return send_error(req, "no OTA partition"); }
+    if ((size_t)req->content_len > part->size) {
+        ota_unlock();
+        return send_error_status(req, "413 Payload Too Large",
+                                 "firmware image too large for OTA partition");
+    }
 
     esp_ota_handle_t ota;
     esp_err_t err = esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota);
@@ -1614,7 +1636,7 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
     err = esp_ota_end(ota);
     if (err != ESP_OK) {
         ota_unlock();
-        return send_error(req, "OTA validation failed");
+        return send_error_status(req, "422 Unprocessable Entity", "OTA validation failed");
     }
 
     err = esp_ota_set_boot_partition(part);

@@ -93,6 +93,8 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
         case MQTT_EVENT_CONNECTED:
             set_status(MQTT_STATUS_UP);
             ESP_LOGI(TAG, "connected to broker");
+            // Safe without s_op_mutex: destroy_client() blocks until the MQTT
+            // task exits, so s_client cannot be freed while this callback runs.
             xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
             for (int i = 0; i < s_nsubs; i++) {
                 esp_mqtt_client_subscribe(s_client, s_subs[i].topic, 1);
@@ -115,23 +117,27 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
                 ESP_LOGW(TAG, "message too large, skipped");
                 break;
             }
-            if (ev->data_len > 0 && ev->topic_len > 0) {
-                char payload[ev->data_len + 1];
-                memcpy(payload, ev->data, ev->data_len);
+            if (ev->topic_len > 0) {
+                char payload[MQTT_MAX_PAYLOAD + 1];
+                if (ev->data_len > 0) {
+                    memcpy(payload, ev->data, ev->data_len);
+                }
                 payload[ev->data_len] = '\0';
 
-                char topic[ev->topic_len + 1];
+                char topic[MQTT_MAX_TOPIC_LEN + 1];
                 memcpy(topic, ev->topic, ev->topic_len);
                 topic[ev->topic_len] = '\0';
 
+                mqtt_message_cb_t cb = NULL;
                 xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
                 for (int i = 0; i < s_nsubs; i++) {
                     if (strcmp(s_subs[i].topic, topic) == 0) {
-                        s_subs[i].cb(topic, payload, ev->data_len);
+                        cb = s_subs[i].cb;
                         break;
                     }
                 }
                 xSemaphoreGive(s_subs_mutex);
+                if (cb) cb(topic, payload, ev->data_len);
             }
             break;
 
@@ -375,7 +381,9 @@ esp_err_t mqtt_action_trigger(int idx)
     action = s_actions[idx];
     xSemaphoreGive(s_actions_mutex);
 
-    mqtt_publish(action.topic, action.payload);
+    if (mqtt_publish(action.topic, action.payload) < 0) {
+        ESP_LOGW(TAG, "action '%s': publish failed", action.name);
+    }
     return ESP_OK;
 }
 
@@ -461,7 +469,7 @@ void mqtt_connect_api(const char *host, uint32_t port,
     xSemaphoreTake(s_op_mutex, portMAX_DELAY);
 
     if (password_provided) {
-        strncpy(pass_to_use, password, sizeof(pass_to_use) - 1);
+        strlcpy(pass_to_use, password, sizeof(pass_to_use));
     } else {
         keep_existing_pass = load_saved_password(pass_to_use, sizeof(pass_to_use));
     }
@@ -589,14 +597,16 @@ void mqtt_subscribe(const char *topic, mqtt_message_cb_t cb)
         xSemaphoreGive(s_subs_mutex);
         return;
     }
-    strncpy(s_subs[s_nsubs].topic, topic, sizeof(s_subs[s_nsubs].topic) - 1);
+    strlcpy(s_subs[s_nsubs].topic, topic, sizeof(s_subs[s_nsubs].topic));
     s_subs[s_nsubs].cb = cb;
     s_nsubs++;
 
     xSemaphoreGive(s_subs_mutex);
-    if (s_status == MQTT_STATUS_UP) {
+    xSemaphoreTake(s_op_mutex, portMAX_DELAY);
+    if (s_status == MQTT_STATUS_UP && s_client) {
         esp_mqtt_client_subscribe(s_client, topic, 1);
     }
+    xSemaphoreGive(s_op_mutex);
 }
 
 const char *mqtt_status_str(mqtt_status_t s)

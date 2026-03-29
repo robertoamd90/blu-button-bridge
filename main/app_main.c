@@ -1,3 +1,4 @@
+#include "esp_err.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "wifi_manager.h"
@@ -27,9 +28,10 @@ void app_main(void)
     // NVS is required by WiFi; if it is corrupted, erase and reinitialize it
     esp_err_t nvs_err = nvs_flash_init();
     if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        nvs_flash_init();
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
     }
+    ESP_ERROR_CHECK(nvs_err);
     gpio_manager_init();
     wifi_init();
     mqtt_init();

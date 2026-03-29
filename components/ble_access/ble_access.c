@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/timers.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
@@ -39,6 +40,8 @@ static psa_key_id_t         s_psa_keys[BLE_ACCESS_MAX_DEVICES]; // cached PSA ke
 static bool                 s_key_import_errors[BLE_ACCESS_MAX_DEVICES];
 static bool                 s_decrypt_errors[BLE_ACCESS_MAX_DEVICES];
 static uint8_t              s_decrypt_failures[BLE_ACCESS_MAX_DEVICES];
+static bool                 s_nvs_dirty    = false;
+static TimerHandle_t        s_nvs_timer    = NULL;
 static int                  s_count        = 0;
 static bool                 s_registering  = false;
 static bool                 s_has_pending  = false;
@@ -86,6 +89,20 @@ static void nvs_load(void)
     }
     s_count = loaded;
     nvs_close(h);
+}
+
+static void nvs_flush_timer_cb(TimerHandle_t timer)
+{
+    (void)timer;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_nvs_dirty) {
+        if (nvs_save() == ESP_OK) {
+            s_nvs_dirty = false;
+        } else if (s_nvs_timer) {
+            xTimerReset(s_nvs_timer, 0);
+        }
+    }
+    xSemaphoreGive(s_mutex);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -334,6 +351,14 @@ static void handle_adv(const uint8_t mac[6], const uint8_t *adv, uint8_t adv_len
 
     note_decrypt_success(dev_idx);
     dev->last_counter = counter;
+    s_nvs_dirty = true;
+    if (s_nvs_timer) {
+        if (xTimerIsTimerActive(s_nvs_timer) == pdFALSE) {
+            xTimerStart(s_nvs_timer, 0);
+        }
+    } else if (nvs_save() == ESP_OK) {
+        s_nvs_dirty = false;
+    }
 
     // Parse BTHome objects in decrypted payload
     int pi = 0;
@@ -471,6 +496,11 @@ void ble_access_init(void)
     memset(s_key_import_errors, 0, sizeof(s_key_import_errors));
     memset(s_decrypt_errors, 0, sizeof(s_decrypt_errors));
     memset(s_decrypt_failures, 0, sizeof(s_decrypt_failures));
+    s_nvs_timer = xTimerCreate("ble_nvs", pdMS_TO_TICKS(2000), pdFALSE,
+                               NULL, nvs_flush_timer_cb);
+    if (!s_nvs_timer) {
+        ESP_LOGW(TAG, "NVS flush timer creation failed; BLE counter saves stay synchronous");
+    }
     psa_status_t crypto_err = psa_crypto_init();
     if (crypto_err != PSA_SUCCESS) {
         ESP_LOGE(TAG, "psa_crypto_init failed: %d", (int)crypto_err);
@@ -566,11 +596,13 @@ esp_err_t ble_access_register_confirm(const uint8_t mac[6], const uint8_t key[16
         return err;
     }
 
+    char saved_label[32];
+    strlcpy(saved_label, dev->label, sizeof(saved_label));
     s_registering = false;
     s_has_pending = false;
     xSemaphoreGive(s_mutex);
-    if (err == ESP_OK) ESP_LOGI(TAG, "Device '%s' registered", dev->label);
-    return err;
+    ESP_LOGI(TAG, "Device '%s' registered", saved_label);
+    return ESP_OK;
 }
 
 void ble_access_register_cancel(void)
