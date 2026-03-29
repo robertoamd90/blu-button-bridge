@@ -344,6 +344,9 @@
   </div>
   <div class="card">
     <h2>Device</h2>
+    <div class="row" style="margin-bottom:.75rem">
+      <button class="btn btn-secondary" onclick="openConsole()">Console</button>
+    </div>
     <div class="row">
       <button class="btn btn-secondary" onclick="systemReboot()">Reboot</button>
       <button class="btn btn-danger"    onclick="systemFactoryReset()">Factory Reset</button>
@@ -980,6 +983,10 @@
       toast('toast-system', true, 'Resetting… device will reboot');
     } catch(e) { toast('toast-system', true, 'Resetting… device will reboot'); }
     setTimeout(() => location.reload(), 8000);
+  }
+
+  function openConsole() {
+    window.location.href = '/console';
   }
 
   async function authSave() {

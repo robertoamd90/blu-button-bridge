@@ -7,6 +7,7 @@
 #include "ble_access.h"
 #include "gpio_manager.h"
 #include "system_runtime.h"
+#include "console_manager.h"
 
 // ── app_main ──────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ void app_main(void)
         nvs_err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_err);
+    console_manager_init();
     gpio_manager_init();
     wifi_init();
     mqtt_init();

@@ -23,6 +23,7 @@
 #include "gpio_manager.h"
 #include "web_manager.h"
 #include "ble_access.h"
+#include "console_manager.h"
 
 static const char *TAG = "web_manager";
 static const char *AUTH_NS = "http_auth";
@@ -37,6 +38,8 @@ static const char *GITHUB_ASSET_NAME  = "BluButtonBridge.bin";
 
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
+extern const uint8_t console_html_start[] asm("_binary_console_html_start");
+extern const uint8_t console_html_end[]   asm("_binary_console_html_end");
 
 typedef struct {
     bool enabled;
@@ -60,6 +63,8 @@ typedef struct {
 static auth_config_t       s_auth_cfg = {0};
 static SemaphoreHandle_t   s_auth_mutex = NULL;
 static SemaphoreHandle_t   s_ota_mutex = NULL;
+static portMUX_TYPE        s_console_stream_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t            s_console_stream_generation = 0;
 
 static void auth_load_config(void);
 static bool auth_require(httpd_req_t *req);
@@ -277,6 +282,11 @@ typedef struct {
     size_t bytes_written;
     esp_err_t stream_err;
 } ota_download_ctx_t;
+
+typedef struct {
+    httpd_req_t *req;
+    uint32_t generation;
+} console_stream_ctx_t;
 
 static void format_version_label(const char *version, char *out, size_t out_len)
 {
@@ -617,6 +627,139 @@ static esp_err_t handle_root(httpd_req_t *req)
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, (const char *)index_html_start,
                     index_html_end - index_html_start);
+    return ESP_OK;
+}
+
+static esp_err_t handle_console_page(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, (const char *)console_html_start,
+                    console_html_end - console_html_start);
+    return ESP_OK;
+}
+
+static esp_err_t send_sse_event(httpd_req_t *req, const char *event_name, const char *data)
+{
+    if (event_name && httpd_resp_send_chunk(req, "event: ", 7) != ESP_OK) return ESP_FAIL;
+    if (event_name && httpd_resp_send_chunk(req, event_name, HTTPD_RESP_USE_STRLEN) != ESP_OK) return ESP_FAIL;
+    if (event_name && httpd_resp_send_chunk(req, "\n", 1) != ESP_OK) return ESP_FAIL;
+
+    const char *cursor = data ? data : "";
+    while (true) {
+        const char *line_end = strchr(cursor, '\n');
+        if (httpd_resp_send_chunk(req, "data: ", 6) != ESP_OK) return ESP_FAIL;
+        if (line_end) {
+            if (line_end > cursor &&
+                httpd_resp_send_chunk(req, cursor, line_end - cursor) != ESP_OK) {
+                return ESP_FAIL;
+            }
+            if (httpd_resp_send_chunk(req, "\n", 1) != ESP_OK) return ESP_FAIL;
+            cursor = line_end + 1;
+            continue;
+        }
+        if (*cursor != '\0' &&
+            httpd_resp_send_chunk(req, cursor, HTTPD_RESP_USE_STRLEN) != ESP_OK) {
+            return ESP_FAIL;
+        }
+        if (httpd_resp_send_chunk(req, "\n\n", 2) != ESP_OK) return ESP_FAIL;
+        return ESP_OK;
+    }
+}
+
+static bool console_stream_is_owner(uint32_t generation)
+{
+    bool is_owner = false;
+    portENTER_CRITICAL(&s_console_stream_lock);
+    is_owner = (generation == s_console_stream_generation);
+    portEXIT_CRITICAL(&s_console_stream_lock);
+    return is_owner;
+}
+
+static void console_stream_task(void *arg)
+{
+    console_stream_ctx_t *ctx = (console_stream_ctx_t *)arg;
+    if (!ctx || !ctx->req) {
+        free(ctx);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    httpd_req_t *req = ctx->req;
+    uint32_t generation = ctx->generation;
+
+    httpd_resp_set_type(req, "text/event-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Connection", "keep-alive");
+    httpd_resp_set_hdr(req, "X-Accel-Buffering", "no");
+
+    uint32_t cursor = 0;
+    TickType_t last_heartbeat = xTaskGetTickCount();
+    console_line_t lines[8];
+
+    while (console_stream_is_owner(generation)) {
+        bool dropped = false;
+        size_t count = console_manager_get_since(&cursor, lines, 8, &dropped);
+        if (dropped && send_sse_event(req, "notice", "Some older log lines were dropped from the in-memory backlog.") != ESP_OK) {
+            break;
+        }
+        for (size_t i = 0; i < count; i++) {
+            if (send_sse_event(req, "log", lines[i].text) != ESP_OK) {
+                goto done;
+            }
+            if (!console_stream_is_owner(generation)) {
+                goto done;
+            }
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        if ((now - last_heartbeat) >= pdMS_TO_TICKS(5000)) {
+            if (httpd_resp_send_chunk(req, ": keep-alive\n\n", 14) != ESP_OK) {
+                break;
+            }
+            last_heartbeat = now;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
+    if (!console_stream_is_owner(generation)) {
+        send_sse_event(req, "replaced", "This console was replaced by a newer viewer.");
+    }
+
+done:
+    httpd_resp_send_chunk(req, NULL, 0);
+    if (httpd_req_async_handler_complete(req) != ESP_OK) {
+        ESP_LOGW(TAG, "console async request cleanup failed");
+    }
+    free(ctx);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t handle_console_stream(httpd_req_t *req)
+{
+    httpd_req_t *async_req = NULL;
+    esp_err_t err = httpd_req_async_handler_begin(req, &async_req);
+    if (err != ESP_OK || !async_req) {
+        return send_error_status(req, "503 Service Unavailable", "could not start console stream");
+    }
+
+    console_stream_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        httpd_req_async_handler_complete(async_req);
+        return send_error_status(req, "503 Service Unavailable", "could not start console stream");
+    }
+
+    portENTER_CRITICAL(&s_console_stream_lock);
+    ctx->generation = ++s_console_stream_generation;
+    portEXIT_CRITICAL(&s_console_stream_lock);
+    ctx->req = async_req;
+
+    if (xTaskCreate(console_stream_task, "console_sse", 4096, ctx, 5, NULL) != pdPASS) {
+        free(ctx);
+        httpd_req_async_handler_complete(async_req);
+        return send_error_status(req, "503 Service Unavailable", "could not start console stream");
+    }
+
     return ESP_OK;
 }
 
@@ -2096,9 +2239,11 @@ void web_manager_init(void)
         return;
     }
 
-    static route_ctx_t route_ctxs[44];
+    static route_ctx_t route_ctxs[46];
     const route_def_t routes[] = {
         { .uri = "/",                         .method = HTTP_GET,    .handler = handle_root,                .auth_required = true },
+        { .uri = "/console",                  .method = HTTP_GET,    .handler = handle_console_page,        .auth_required = true },
+        { .uri = "/api/console/stream",       .method = HTTP_GET,    .handler = handle_console_stream,      .auth_required = true },
         { .uri = "/api/status",               .method = HTTP_GET,    .handler = handle_status,              .auth_required = true },
         { .uri = "/api/wifi/config",          .method = HTTP_GET,    .handler = handle_wifi_config_get,     .auth_required = true },
         { .uri = "/api/wifi/scan",            .method = HTTP_GET,    .handler = handle_wifi_scan,           .auth_required = true },
