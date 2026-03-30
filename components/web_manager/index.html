@@ -6,64 +6,132 @@
   <title>BluButtonBridge</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #222; }
-    header { background: #1a1a2e; color: #fff; padding: .75rem 1.5rem; display: flex; align-items: center; gap: .75rem; }
+    :root {
+      --bg: #f0f2f5;
+      --text: #222;
+      --header-bg: #1a1a2e;
+      --header-text: #fff;
+      --surface: #fff;
+      --surface-muted: #f8fafc;
+      --border: #e0e0e0;
+      --border-strong: #d0d0d0;
+      --text-muted: #555;
+      --text-soft: #888;
+      --nav-text: #666;
+      --nav-hover-bg: #f9f9f9;
+      --nav-hover-text: #333;
+      --primary: #1a1a2e;
+      --btn-secondary-bg: #e5e7eb;
+      --btn-secondary-text: #374151;
+      --scan-hover: #f0f4ff;
+      --warning-bg: #fffbeb;
+      --warning-border: #fcd34d;
+      --warning-text: #b45309;
+      --error-bg-soft: #fff7ed;
+      --error-border-soft: #fdba74;
+      --error-text-soft: #9a3412;
+      --danger: #ef4444;
+      --shadow: 0 1px 4px rgba(0,0,0,.08);
+    }
+    body[data-theme="dark"] {
+      --bg: #111827;
+      --text: #e5e7eb;
+      --header-bg: #020617;
+      --header-text: #e5e7eb;
+      --surface: #1f2937;
+      --surface-muted: #111827;
+      --border: #374151;
+      --border-strong: #4b5563;
+      --text-muted: #d1d5db;
+      --text-soft: #9ca3af;
+      --nav-text: #d1d5db;
+      --nav-hover-bg: #111827;
+      --nav-hover-text: #f3f4f6;
+      --primary: #93c5fd;
+      --btn-secondary-bg: #374151;
+      --btn-secondary-text: #f3f4f6;
+      --scan-hover: #111827;
+      --warning-bg: #422006;
+      --warning-border: #92400e;
+      --warning-text: #fdba74;
+      --error-bg-soft: #431407;
+      --error-border-soft: #9a3412;
+      --error-text-soft: #fdba74;
+      --danger: #f87171;
+      --shadow: 0 1px 4px rgba(0,0,0,.45);
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); transition: background-color .2s ease, color .2s ease; }
+    header { background: var(--header-bg); color: var(--header-text); padding: .75rem 1.5rem; display: flex; align-items: center; gap: .75rem; }
     header h1 { font-size: 1.1rem; font-weight: 600; }
-    #status-bar { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; padding: .6rem 1.5rem; background: #fff; border-bottom: 1px solid #e0e0e0; font-size: .82rem; }
+    #status-bar { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; padding: .6rem 1.5rem; background: var(--surface); border-bottom: 1px solid var(--border); font-size: .82rem; }
     .pill { display: inline-flex; align-items: center; gap: .4rem; }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
     .dot.up   { background: #22c55e; }
     .dot.down { background: #ef4444; }
     .dot.warn { background: #f59e0b; }
-    nav { display: flex; background: #fff; border-bottom: 2px solid #e0e0e0; }
-    nav button { flex: 1; padding: .65rem .5rem; border: none; background: none; cursor: pointer; font-size: .88rem; color: #666; border-bottom: 3px solid transparent; margin-bottom: -2px; }
-    nav button.active { color: #1a1a2e; border-bottom-color: #1a1a2e; font-weight: 600; }
-    nav button:hover:not(.active) { background: #f9f9f9; color: #333; }
+    nav { display: flex; background: var(--surface); border-bottom: 2px solid var(--border); }
+    nav button { flex: 1; padding: .65rem .5rem; border: none; background: none; cursor: pointer; font-size: .88rem; color: var(--nav-text); border-bottom: 3px solid transparent; margin-bottom: -2px; }
+    nav button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+    nav button:hover:not(.active) { background: var(--nav-hover-bg); color: var(--nav-hover-text); }
     .tab { display: none; padding: 1.25rem; max-width: 560px; margin: 0 auto; }
     .tab.active { display: block; }
-    .card { background: #fff; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
-    .card h2 { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #888; margin-bottom: 1rem; }
-    label { display: block; font-size: .82rem; font-weight: 500; margin-bottom: .25rem; color: #555; }
-    input[type=text], input[type=password], input[type=number], select, textarea { width: 100%; padding: .45rem .65rem; border: 1px solid #d0d0d0; border-radius: 6px; font-size: .9rem; outline: none; transition: border-color .15s; margin-bottom: .75rem; background: #fff; }
-    input:focus, textarea:focus { border-color: #1a1a2e; }
+    .card { background: var(--surface); border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; box-shadow: var(--shadow); }
+    .card h2 { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--text-soft); margin-bottom: 1rem; }
+    label { display: block; font-size: .82rem; font-weight: 500; margin-bottom: .25rem; color: var(--text-muted); }
+    input[type=text], input[type=password], input[type=number], select, textarea { width: 100%; padding: .45rem .65rem; border: 1px solid var(--border-strong); border-radius: 6px; font-size: .9rem; outline: none; transition: border-color .15s; margin-bottom: .75rem; background: var(--surface); color: var(--text); }
+    input:focus, textarea:focus, select:focus { border-color: var(--primary); }
     textarea { resize: none; font-family: monospace; }
     .row { display: flex; gap: .5rem; flex-wrap: wrap; }
     .btn { padding: .45rem 1.1rem; border: none; border-radius: 6px; cursor: pointer; font-size: .88rem; font-weight: 500; }
     .btn:hover { opacity: .85; }
-    .btn-primary { background: #1a1a2e; color: #fff; }
-    .btn-danger  { background: #ef4444; color: #fff; }
-    .btn-secondary { background: #e5e7eb; color: #374151; }
+    .btn-primary { background: var(--primary); color: #fff; }
+    body[data-theme="dark"] .btn-primary { color: #111827; }
+    .btn-danger  { background: var(--danger); color: #fff; }
+    .btn-secondary { background: var(--btn-secondary-bg); color: var(--btn-secondary-text); }
     .toast { margin-top: .75rem; padding: .5rem .75rem; border-radius: 6px; font-size: .82rem; display: none; }
     .toast.ok  { background: #dcfce7; color: #166534; }
     .toast.err { background: #fee2e2; color: #991b1b; }
     .check-row { display: flex; align-items: center; gap: .5rem; margin-bottom: .75rem; }
     .check-row input { width: auto; margin: 0; }
     .check-row label { margin: 0; }
-    small { color: #888; font-size: .8rem; }
-    .current-val { font-size: .82rem; color: #555; margin-bottom: .75rem; padding: .35rem .6rem; background: #f8fafc; border-radius: 5px; border: 1px solid #e2e8f0; }
-    .scan-list { margin-top: .5rem; border: 1px solid #e0e0e0; border-radius: 6px; overflow: hidden; }
-    .scan-item { display: flex; justify-content: space-between; align-items: center; padding: .45rem .75rem; cursor: pointer; font-size: .88rem; border-bottom: 1px solid #f0f0f0; }
+    small { color: var(--text-soft); font-size: .8rem; }
+    .current-val { font-size: .82rem; color: var(--text-muted); margin-bottom: .75rem; padding: .35rem .6rem; background: var(--surface-muted); border-radius: 5px; border: 1px solid var(--border); }
+    .scan-list { margin-top: .5rem; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .scan-item { display: flex; justify-content: space-between; align-items: center; padding: .45rem .75rem; cursor: pointer; font-size: .88rem; border-bottom: 1px solid var(--border); }
     .scan-item:last-child { border-bottom: none; }
-    .scan-item:hover { background: #f0f4ff; }
+    .scan-item:hover { background: var(--scan-hover); }
     .scan-ssid { font-weight: 500; }
-    .scan-rssi { font-size: .78rem; color: #888; }
+    .scan-rssi { font-size: .78rem; color: var(--text-soft); }
     .scan-rssi.good { color: #22c55e; }
     .scan-rssi.ok   { color: #f59e0b; }
     .scan-rssi.weak { color: #ef4444; }
-    .action-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .5rem .75rem; padding: .4rem 0; border-bottom: 1px solid #f0f0f0; font-size: .88rem; }
+    .action-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .5rem .75rem; padding: .4rem 0; border-bottom: 1px solid var(--border); font-size: .88rem; }
     .action-row:last-child { border-bottom: none; }
     .action-main { min-width: 0; }
     .action-name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
-    .action-sub { font-size: .75rem; color: #888; font-family: monospace; overflow-wrap: anywhere; }
+    .action-sub { font-size: .75rem; color: var(--text-soft); font-family: monospace; overflow-wrap: anywhere; }
     .action-buttons { display: grid; grid-auto-flow: column; grid-auto-columns: max-content; gap: .3rem; align-items: center; justify-content: end; }
-    .event-block { margin-bottom: .6rem; padding: .5rem .7rem; border: 1px solid #e8e8e8; border-radius: 6px; }
-    .event-label { font-size: .78rem; font-weight: 700; text-transform: uppercase; color: #888; margin-bottom: .4rem; }
+    .event-block { margin-bottom: .6rem; padding: .5rem .7rem; border: 1px solid var(--border); border-radius: 6px; }
+    .event-label { font-size: .78rem; font-weight: 700; text-transform: uppercase; color: var(--text-soft); margin-bottom: .4rem; }
     @media (max-width: 560px) {
       .action-row { grid-template-columns: 1fr; }
       .action-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-flow: row; width: 100%; }
       .action-buttons .btn { width: 100%; }
     }
-  </style>
+</style>
+  <script>
+    (function () {
+      try {
+        const saved = localStorage.getItem('bbb-ui-theme') || 'system';
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const resolved = saved === 'system' ? (prefersDark ? 'dark' : 'light') : saved;
+        document.documentElement.style.colorScheme = resolved;
+        document.addEventListener('DOMContentLoaded', function () {
+          document.body.setAttribute('data-theme', resolved);
+        });
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
 
@@ -109,7 +177,7 @@
   </div>
   <div class="card">
     <h2>Access Point</h2>
-    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+    <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:.75rem">
       When active, broadcasts the configured network at 192.168.4.1
       with automatic captive portal.<br>
       <strong>Note:</strong> BLE scanning is paused while the AP is active.
@@ -119,7 +187,7 @@
       <button class="btn btn-primary" onclick="apStart()">Start AP</button>
       <button class="btn btn-danger"  onclick="apStop()">Stop AP</button>
     </div>
-    <div style="height:1px;background:#ececec;margin:.9rem 0"></div>
+    <div style="height:1px;background:var(--border);margin:.9rem 0"></div>
     <div style="font-size:.82rem;font-weight:700;margin-bottom:.35rem">Settings</div>
     <div class="check-row">
       <input type="checkbox" id="ap-enabled">
@@ -158,12 +226,12 @@
   </div>
   <div class="card">
     <h2>Actions</h2>
-    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+    <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:.75rem">
       Named MQTT publish commands. Assign them to BLE button events in the BLE tab.
     </p>
-    <div id="mqtt-action-list" style="margin-bottom:.75rem"><small style="color:#888">No actions defined</small></div>
-    <div id="mqtt-action-edit-card" style="display:none;margin-bottom:.75rem;padding:.75rem;border:1px solid #d0d0d0;border-radius:8px">
-      <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:#888;margin-bottom:.6rem" id="act-edit-title">Edit action</div>
+    <div id="mqtt-action-list" style="margin-bottom:.75rem"><small style="color:var(--text-soft)">No actions defined</small></div>
+    <div id="mqtt-action-edit-card" style="display:none;margin-bottom:.75rem;padding:.75rem;border:1px solid var(--border-strong);border-radius:8px">
+      <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:var(--text-soft);margin-bottom:.6rem" id="act-edit-title">Edit action</div>
       <label>Name</label>
       <input id="act-name" type="text" maxlength="31" placeholder="Toggle light">
       <label>Topic</label>
@@ -184,12 +252,12 @@
 <div id="tab-gpio" class="tab">
   <div class="card">
     <h2>Output Actions</h2>
-    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+    <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:.75rem">
       Named GPIO output commands. The blue status LED is reserved by the firmware and is not assignable here.
     </p>
-    <div id="gpio-action-list" style="margin-bottom:.75rem"><small style="color:#888">No GPIO actions defined</small></div>
-    <div id="gpio-action-edit-card" style="display:none;margin-bottom:.75rem;padding:.75rem;border:1px solid #d0d0d0;border-radius:8px">
-      <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:#888;margin-bottom:.6rem" id="gpio-edit-title">Edit GPIO action</div>
+    <div id="gpio-action-list" style="margin-bottom:.75rem"><small style="color:var(--text-soft)">No GPIO actions defined</small></div>
+    <div id="gpio-action-edit-card" style="display:none;margin-bottom:.75rem;padding:.75rem;border:1px solid var(--border-strong);border-radius:8px">
+      <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:var(--text-soft);margin-bottom:.6rem" id="gpio-edit-title">Edit GPIO action</div>
       <label>Name</label>
       <input id="gpio-name" type="text" maxlength="31" placeholder="Relay pulse">
       <label>GPIO</label>
@@ -226,7 +294,7 @@
 <div id="tab-ble" class="tab">
   <div class="card">
     <h2>BLE Devices</h2>
-    <div id="ble-device-list"><small style="color:#888">No devices registered</small></div>
+    <div id="ble-device-list"><small style="color:var(--text-soft)">No devices registered</small></div>
     <div id="toast-ble" class="toast"></div>
   </div>
   <div id="ble-edit-card" class="card" style="display:none">
@@ -238,15 +306,15 @@
       <input type="checkbox" id="ble-edit-enabled">
       <label for="ble-edit-enabled">Enabled</label>
     </div>
-    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:#888;margin-bottom:.4rem">MQTT Actions</div>
+    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:var(--text-soft);margin-bottom:.4rem">MQTT Actions</div>
     <div id="ble-edit-mqtt-events"></div>
-    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:#888;margin:.2rem 0 .4rem">GPIO Actions</div>
+    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:var(--text-soft);margin:.2rem 0 .4rem">GPIO Actions</div>
     <div id="ble-edit-gpio-events"></div>
-    <div id="ble-edit-import-warn" style="color:#b45309;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:.65rem .75rem;margin-bottom:.75rem;display:none">
+    <div id="ble-edit-import-warn" style="color:var(--warning-text);background:var(--warning-bg);border:1px solid var(--warning-border);border-radius:6px;padding:.65rem .75rem;margin-bottom:.75rem;display:none">
       Local key import error. The ESP controller could not load this key into its crypto engine.
       Try re-importing the stored key first; if it persists, reboot the controller or replace the key.
     </div>
-    <div id="ble-edit-decrypt-warn" style="color:#9a3412;background:#fff7ed;border:1px solid #fdba74;border-radius:6px;padding:.65rem .75rem;margin-bottom:.75rem;display:none">
+    <div id="ble-edit-decrypt-warn" style="color:var(--error-text-soft);background:var(--error-bg-soft);border:1px solid var(--error-border-soft);border-radius:6px;padding:.65rem .75rem;margin-bottom:.75rem;display:none">
       Decrypt error. Advertisements are being received, but decryption keeps failing.
       The BLE key is likely out of sync with the remote button.
     </div>
@@ -262,14 +330,14 @@
   </div>
   <div class="card">
     <h2>Add Device</h2>
-    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+    <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:.75rem">
       Start scanning, then press the button on your Shelly Blu device to capture its MAC address.
     </p>
     <div id="ble-reg-idle">
       <button class="btn btn-primary" onclick="bleRegStart()">Start Scanning</button>
     </div>
     <div id="ble-reg-active" style="display:none">
-      <p id="ble-reg-msg" style="font-size:.82rem;color:#1a1a2e;margin-bottom:.75rem">
+      <p id="ble-reg-msg" style="font-size:.82rem;color:var(--primary);margin-bottom:.75rem">
         Listening… press the button on the device now.
       </p>
       <div id="ble-reg-form" style="display:none">
@@ -294,20 +362,34 @@
 <!-- System -->
 <div id="tab-system" class="tab">
   <div class="card">
+    <h2>UI Theme</h2>
+    <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:.75rem">
+      Choose how the web UI should appear on this browser.
+    </p>
+    <label>Theme mode</label>
+    <select id="ui-theme-mode" onchange="themeSave()">
+      <option value="system">System mode (follow OS)</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+    <small>Saved locally in your browser for this device page.</small>
+    <div id="toast-theme" class="toast"></div>
+  </div>
+  <div class="card">
     <h2>Firmware Update (OTA)</h2>
-    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+    <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:.75rem">
       Install the latest public GitHub release after SHA-256 verification, or upload a firmware binary manually. The device will reboot after a successful update.
     </p>
     <div style="font-size:.82rem;font-weight:700;margin-bottom:.35rem">From GitHub release</div>
     <div style="font-size:.9rem;margin-bottom:.35rem">Current version: <strong id="gh-current-version">…</strong></div>
     <div style="font-size:.9rem;margin-bottom:.35rem">Latest release: <strong id="gh-latest-version">Not checked</strong></div>
-    <div style="font-size:.85rem;color:#555;margin-bottom:.75rem" id="gh-update-status">Run a manual check to look for updates.</div>
+    <div style="font-size:.85rem;color:var(--text-muted);margin-bottom:.75rem" id="gh-update-status">Run a manual check to look for updates.</div>
     <div class="row" style="margin-bottom:.85rem">
       <button class="btn btn-secondary" onclick="githubUpdateCheck()">Check for Updates</button>
       <button class="btn btn-primary" id="gh-update-install-btn" onclick="githubUpdateInstall()" style="display:none">Install Update</button>
     </div>
     <div id="toast-gh-update" class="toast" style="margin-bottom:.85rem"></div>
-    <div style="height:1px;background:#ececec;margin:.9rem 0"></div>
+    <div style="height:1px;background:var(--border);margin:.9rem 0"></div>
     <div style="font-size:.82rem;font-weight:700;margin-bottom:.35rem">Manual upload</div>
     <input id="ota-file" type="file" accept=".bin" style="margin-bottom:.75rem">
     <button class="btn btn-primary" onclick="otaUpload()">Upload &amp; Update</button>
@@ -315,7 +397,7 @@
   </div>
   <div class="card">
     <h2>Configuration Backup</h2>
-    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+    <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:.75rem">
       Download or restore the full device configuration (WiFi, MQTT, GPIO, BLE, AP settings).
     </p>
     <div class="row" style="margin-bottom:.75rem">
@@ -328,7 +410,7 @@
   </div>
   <div class="card">
     <h2>Access Control</h2>
-    <p style="font-size:.82rem;color:#555;margin-bottom:.75rem">
+    <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:.75rem">
       Optional HTTP Basic Auth for the web UI and API. When enabled, the browser will use its standard username/password prompt.
     </p>
     <div class="check-row">
@@ -410,6 +492,8 @@
   }
 
   const MASKED_SECRET = '********';
+  const UI_THEME_KEY = 'bbb-ui-theme';
+  let _themeMode = 'system';
   let _wifiSavedSsid = '';
   let _wifiPasswordSet = false;
   let _wifiPassDirty = false;
@@ -508,6 +592,47 @@
       passEl.value = '';
       passEl.placeholder = 'Password (empty = open network)';
     }
+  }
+
+  function getResolvedTheme(mode) {
+    if (mode === 'dark' || mode === 'light') return mode;
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    return prefersDark ? 'dark' : 'light';
+  }
+
+  function applyTheme(mode, silent) {
+    _themeMode = mode || 'system';
+    const resolved = getResolvedTheme(_themeMode);
+    document.body.setAttribute('data-theme', resolved);
+    document.documentElement.style.colorScheme = resolved;
+    const sel = document.getElementById('ui-theme-mode');
+    if (sel) sel.value = _themeMode;
+    if (!silent) toast('toast-theme', true, 'Theme updated');
+  }
+
+  function themeLoad() {
+    let saved = 'system';
+    try {
+      saved = localStorage.getItem(UI_THEME_KEY) || 'system';
+    } catch (e) {}
+    if (!['system', 'light', 'dark'].includes(saved)) saved = 'system';
+    applyTheme(saved, true);
+  }
+
+  function themeSave() {
+    const sel = document.getElementById('ui-theme-mode');
+    const mode = sel ? sel.value : 'system';
+    try {
+      localStorage.setItem(UI_THEME_KEY, mode);
+    } catch (e) {}
+    applyTheme(mode, false);
+  }
+
+  if (window.matchMedia) {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => { if (_themeMode === 'system') applyTheme('system', true); };
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);
   }
 
   async function refreshStatus() {
@@ -734,7 +859,7 @@
   function renderMqttActions() {
     const el = document.getElementById('mqtt-action-list');
     if (!_mqttActions.length) {
-      el.innerHTML = '<small style="color:#888">No actions defined</small>';
+      el.innerHTML = '<small style="color:var(--text-soft)">No actions defined</small>';
       return;
     }
     el.innerHTML = _mqttActions.map(a => `
@@ -848,7 +973,7 @@
   function renderGpioActions() {
     const el = document.getElementById('gpio-action-list');
     if (!_gpioActions.length) {
-      el.innerHTML = '<small style="color:#888">No GPIO actions defined</small>';
+      el.innerHTML = '<small style="color:var(--text-soft)">No GPIO actions defined</small>';
       return;
     }
     el.innerHTML = _gpioActions.map(a => `
@@ -1131,7 +1256,7 @@
     if (!actions.length) {
       return `<div class="event-block">
         <div class="event-label">${evLabel}</div>
-        <small style="color:#888">${emptyText}</small>
+        <small style="color:var(--text-soft)">${emptyText}</small>
       </div>`;
     }
     const checks = actions.map(a => {
@@ -1155,23 +1280,23 @@
 
   function renderBleDevices(devs) {
     const el = document.getElementById('ble-device-list');
-    if (!devs.length) { el.innerHTML = '<small style="color:#888">No devices registered</small>'; return; }
+    if (!devs.length) { el.innerHTML = '<small style="color:var(--text-soft)">No devices registered</small>'; return; }
     el.innerHTML = devs.map(d => `
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:.5rem 0;border-bottom:1px solid #f0f0f0">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:.5rem 0;border-bottom:1px solid var(--border)">
         <div>
           <div style="font-weight:600;font-size:.9rem">
             ${escHtml(d.label)}
-            ${d.key_import_error ? ' <span style="color:#b45309;font-size:.75rem;font-weight:600">&#9888; Import Error</span>' : ''}
-            ${d.decrypt_error ? ' <span style="color:#c2410c;font-size:.75rem;font-weight:600">&#9888; Decrypt Error</span>' : ''}
+            ${d.key_import_error ? ' <span style="color:var(--warning-text);font-size:.75rem;font-weight:600">&#9888; Import Error</span>' : ''}
+            ${d.decrypt_error ? ' <span style="color:var(--error-text-soft);font-size:.75rem;font-weight:600">&#9888; Decrypt Error</span>' : ''}
           </div>
-          <div style="font-size:.76rem;color:#888;font-family:monospace">${d.mac}</div>
-          <div style="font-size:.76rem;color:#555;margin-top:.2rem">
+          <div style="font-size:.76rem;color:var(--text-soft);font-family:monospace">${d.mac}</div>
+          <div style="font-size:.76rem;color:var(--text-muted);margin-top:.2rem">
             ${d.battery_percent === null ? 'Battery: --' : ('Battery: ' + d.battery_percent + '%')}
           </div>
-          <div style="font-size:.76rem;color:#555;margin-top:.15rem">
+          <div style="font-size:.76rem;color:var(--text-muted);margin-top:.15rem">
             ${d.last_seen_age_s === null ? 'Last seen: waiting for traffic' : ('Last seen: ' + formatAge(d.last_seen_age_s))}
           </div>
-          <div style="font-size:.76rem;color:#555;margin-top:.15rem">
+          <div style="font-size:.76rem;color:var(--text-muted);margin-top:.15rem">
             ${d.last_button_event === null
               ? 'Last event: none yet'
               : ('Last event: ' + formatBleEvent(d.last_button_event) + ' (' + formatAge(d.last_button_event_age_s) + ')')}
@@ -1334,6 +1459,7 @@
 
   // ── Init ──────────────────────────────────────────────────────────────────
 
+  themeLoad();
   refreshStatus();
   setGithubUpdateUi(null);
   loadWifiConfig();
