@@ -4,6 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BluButtonBridge Console</title>
+  <script>
+    (function () {
+      try {
+        const saved = localStorage.getItem('bbb-ui-theme') || 'system';
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const resolved = saved === 'system' ? (prefersDark ? 'dark' : 'light') : saved;
+        document.documentElement.setAttribute('data-theme', resolved);
+        document.documentElement.style.colorScheme = resolved;
+      } catch (e) {}
+    })();
+  </script>
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -26,7 +37,7 @@
       --line-error: #b91c1c;
       --line-notice: #1d4ed8;
     }
-    body[data-theme="dark"] {
+    :root[data-theme="dark"] {
       --bg: #0f172a;
       --text: #e2e8f0;
       --header-bg: #111827;
@@ -102,7 +113,7 @@
     function applyTheme(mode) {
       _themeMode = mode || 'system';
       const resolved = resolveTheme(_themeMode);
-      document.body.setAttribute('data-theme', resolved);
+      document.documentElement.setAttribute('data-theme', resolved);
       document.documentElement.style.colorScheme = resolved;
     }
 
