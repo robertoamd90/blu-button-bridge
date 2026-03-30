@@ -7,23 +7,61 @@
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; }
-    body { margin: 0; display: flex; flex-direction: column; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background: #0f172a; color: #e2e8f0; }
-    header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .9rem 1rem; background: #111827; border-bottom: 1px solid rgba(255,255,255,.08); flex-shrink: 0; }
+    :root {
+      --bg: #f3f4f6;
+      --text: #0f172a;
+      --header-bg: #ffffff;
+      --header-border: rgba(15,23,42,.12);
+      --btn-bg: #e2e8f0;
+      --btn-bg-hover: #cbd5e1;
+      --btn-text: #0f172a;
+      --status: #1d4ed8;
+      --meta: #475569;
+      --frame-border: rgba(100,116,139,.35);
+      --frame-bg: #ffffff;
+      --frame-shadow: inset 0 1px 0 rgba(255,255,255,.8);
+      --line: #334155;
+      --line-info: #15803d;
+      --line-warn: #b45309;
+      --line-error: #b91c1c;
+      --line-notice: #1d4ed8;
+    }
+    body[data-theme="dark"] {
+      --bg: #0f172a;
+      --text: #e2e8f0;
+      --header-bg: #111827;
+      --header-border: rgba(255,255,255,.08);
+      --btn-bg: #1f2937;
+      --btn-bg-hover: #334155;
+      --btn-text: #f8fafc;
+      --status: #93c5fd;
+      --meta: #94a3b8;
+      --frame-border: rgba(148,163,184,.2);
+      --frame-bg: #020617;
+      --frame-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+      --line: #cbd5e1;
+      --line-info: #4ade80;
+      --line-warn: #facc15;
+      --line-error: #f87171;
+      --line-notice: #93c5fd;
+    }
+    body { margin: 0; display: flex; flex-direction: column; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background: var(--bg); color: var(--text); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .9rem 1rem; background: var(--header-bg); border-bottom: 1px solid var(--header-border); flex-shrink: 0; }
     h1 { margin: 0; font-size: .95rem; font-weight: 600; }
     .actions { display: flex; gap: .5rem; }
-    button, a { border: none; border-radius: 6px; padding: .45rem .8rem; background: #1f2937; color: #f8fafc; cursor: pointer; text-decoration: none; font: inherit; }
-    button:hover, a:hover { background: #334155; }
-    #status { font-size: .78rem; color: #93c5fd; }
+    button, a { border: none; border-radius: 6px; padding: .45rem .8rem; background: var(--btn-bg); color: var(--btn-text); cursor: pointer; text-decoration: none; font: inherit; }
+    button:hover, a:hover { background: var(--btn-bg-hover); }
+    #status { font-size: .78rem; color: var(--status); }
     main { flex: 1; min-height: 0; padding: 1rem; display: flex; }
     .console-shell { width: min(1200px, 100%); margin: 0 auto; display: flex; flex-direction: column; gap: .75rem; min-height: 0; }
-    .console-meta { display: flex; justify-content: space-between; align-items: center; gap: 1rem; color: #94a3b8; font-size: .78rem; }
-    .console-frame { flex: 1; min-height: 0; border: 1px solid rgba(148,163,184,.2); border-radius: 10px; background: #020617; box-shadow: inset 0 1px 0 rgba(255,255,255,.03); overflow: hidden; }
+    .console-meta { display: flex; justify-content: space-between; align-items: center; gap: 1rem; color: var(--meta); font-size: .78rem; }
+    .console-frame { flex: 1; min-height: 0; border: 1px solid var(--frame-border); border-radius: 10px; background: var(--frame-bg); box-shadow: var(--frame-shadow); overflow: hidden; }
     #console { height: 100%; overflow-y: auto; margin: 0; padding: 1rem; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
-    .line { margin: 0 0 .18rem; color: #cbd5e1; }
-    .line.info { color: #4ade80; }
-    .line.warn { color: #facc15; }
-    .line.error { color: #f87171; }
-    .line.notice { color: #93c5fd; }
+    .line { margin: 0 0 .18rem; color: var(--line); }
+    .line.info { color: var(--line-info); }
+    .line.warn { color: var(--line-warn); }
+    .line.error { color: var(--line-error); }
+    .line.notice { color: var(--line-notice); }
   </style>
 </head>
 <body>
@@ -49,9 +87,40 @@
     </div>
   </main>
   <script>
+    const UI_THEME_KEY = 'bbb-ui-theme';
+    let _themeMode = 'system';
     const consoleEl = document.getElementById('console');
     const statusEl = document.getElementById('status');
     const lineCountEl = document.getElementById('line-count');
+
+    function resolveTheme(mode) {
+      if (mode === 'dark' || mode === 'light') return mode;
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      return prefersDark ? 'dark' : 'light';
+    }
+
+    function applyTheme(mode) {
+      _themeMode = mode || 'system';
+      const resolved = resolveTheme(_themeMode);
+      document.body.setAttribute('data-theme', resolved);
+      document.documentElement.style.colorScheme = resolved;
+    }
+
+    function initTheme() {
+      let saved = 'system';
+      try {
+        saved = localStorage.getItem(UI_THEME_KEY) || 'system';
+      } catch (e) {}
+      if (!['system', 'light', 'dark'].includes(saved)) saved = 'system';
+      applyTheme(saved);
+    }
+
+    if (window.matchMedia) {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      const onChange = () => { if (_themeMode === 'system') applyTheme('system'); };
+      if (mq.addEventListener) mq.addEventListener('change', onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+    }
 
     function classifyLine(text, kind) {
       if (kind === 'notice') return 'notice';
@@ -96,6 +165,7 @@
       statusEl.textContent = 'Superseded by a newer console tab';
       source.close();
     });
+    initTheme();
     updateLineCount();
   </script>
 </body>
