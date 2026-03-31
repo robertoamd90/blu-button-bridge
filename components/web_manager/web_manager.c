@@ -552,6 +552,13 @@ static bool console_stream_is_owner(uint32_t generation)
     return is_owner;
 }
 
+static void console_stream_close_all(void)
+{
+    portENTER_CRITICAL(&s_console_stream_lock);
+    ++s_console_stream_generation;
+    portEXIT_CRITICAL(&s_console_stream_lock);
+}
+
 static void console_stream_task(void *arg)
 {
     console_stream_ctx_t *ctx = (console_stream_ctx_t *)arg;
@@ -1594,6 +1601,8 @@ static void ota_unlock(void)
 static esp_err_t handle_update_check(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
+    console_stream_close_all();
+    vTaskDelay(pdMS_TO_TICKS(300));
     github_release_info_t release;
     esp_err_t err = github_fetch_latest_release(&release);
     if (err == ESP_ERR_NOT_FOUND) return send_error(req, "latest release is missing BluButtonBridge.bin or its sha256 digest");
