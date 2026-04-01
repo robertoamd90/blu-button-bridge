@@ -1,12 +1,12 @@
 const OWNER = "robertoamd90";
 const REPO = "blu-button-bridge";
 const PROJECT_NAME = "BluButtonBridge";
-const ASSET_NAME = "BluButtonBridge-full.bin";
 const CHIP_FAMILY = "ESP32";
 const RELEASES_URL = `https://github.com/${OWNER}/${REPO}/releases`;
 const LATEST_RELEASE_URL = `${RELEASES_URL}/latest`;
-const LATEST_ASSET_URL = `${LATEST_RELEASE_URL}/download/${ASSET_NAME}`;
 const API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
+const ASSET_NAME = "BluButtonBridge-full.bin";
+const PAGES_ASSET_URL = "./firmware/BluButtonBridge-full.bin";
 
 const installButton = document.querySelector("#install-button");
 const releaseDot = document.querySelector("#release-dot");
@@ -22,7 +22,7 @@ const installHint = document.querySelector("#install-hint");
 let manifestUrl = null;
 
 releaseLink.href = LATEST_RELEASE_URL;
-assetLink.href = LATEST_ASSET_URL;
+assetLink.href = PAGES_ASSET_URL;
 releaseAsset.textContent = ASSET_NAME;
 applyManifest("latest");
 
@@ -60,8 +60,9 @@ function buildManifest(version) {
     builds: [
       {
         chipFamily: CHIP_FAMILY,
+        improv: false,
         parts: [
-          { path: LATEST_ASSET_URL, offset: 0 },
+          { path: PAGES_ASSET_URL, offset: 0 },
         ],
       },
     ],
@@ -80,9 +81,9 @@ function applyManifest(version) {
 function useFallbackManifest(message) {
   applyManifest("latest");
   releaseVersion.textContent = "latest";
-  releaseDate.textContent = "Via release redirect";
-  releaseSize.textContent = "Resolved at download time";
-  installHint.textContent = "Release metadata could not be loaded live, but the installer still targets the latest published full image.";
+  releaseDate.textContent = "Latest deployed build";
+  releaseSize.textContent = "Served from this site";
+  installHint.textContent = "Release metadata could not be loaded live, but the install button still uses the same-origin firmware mirrored into this Pages site.";
   setStatus("warning", message);
 }
 
@@ -127,8 +128,8 @@ async function loadLatestRelease() {
   releaseDate.textContent = formatDate(release.published_at);
   releaseSize.textContent = formatBytes(asset.size);
   releaseLink.href = release.html_url || LATEST_RELEASE_URL;
-  assetLink.href = asset.browser_download_url || LATEST_ASSET_URL;
-  installHint.textContent = "The install button now points at the latest published full image from GitHub Releases.";
+  assetLink.href = PAGES_ASSET_URL;
+  installHint.textContent = "The install button now uses the firmware mirrored into this Pages site from the latest public release.";
   setStatus("ready", "Latest release ready for browser install.");
 }
 

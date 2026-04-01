@@ -7,6 +7,9 @@ on:
     paths:
       - ".github/workflows/pages.yml"
       - "site/**"
+  release:
+    types:
+      - published
   workflow_dispatch:
 
 permissions:
@@ -31,10 +34,22 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
+      - name: Prepare Pages payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf _site
+          mkdir -p _site/firmware
+          cp -R site/. _site/
+          gh release download \
+            --repo "${{ github.repository }}" \
+            --pattern "BluButtonBridge-full.bin" \
+            --dir _site/firmware
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: site
+          path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment

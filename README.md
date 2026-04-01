@@ -409,8 +409,9 @@ How it works:
 
 - the page queries the latest public GitHub release
 - it looks for `BluButtonBridge-full.bin`
-- it generates an `ESP Web Tools` manifest dynamically in the browser
-- if GitHub release metadata is temporarily unavailable, it falls back to the documented `releases/latest/download/...` URL
+- the Pages workflow mirrors that full image into the published site payload
+- the page builds the `ESP Web Tools` manifest dynamically, but points the firmware path at the mirrored same-origin Pages copy
+- if GitHub release metadata is temporarily unavailable, the install button still points at the mirrored Pages copy
 
 Requirements:
 
