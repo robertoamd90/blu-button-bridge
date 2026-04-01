@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BluButtonBridge Installer</title>
+  <meta name="description" content="Install the latest BluButtonBridge firmware on a supported ESP32 directly from the browser.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+  ></script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <p class="eyebrow">GitHub Pages Installer</p>
+      <h1>Install BluButtonBridge from the browser</h1>
+      <p class="lead">
+        Flash the latest public <code>BluButtonBridge-full.bin</code> release onto a supported ESP32
+        without opening the terminal.
+      </p>
+
+      <div class="hero-grid">
+        <section class="card card-strong">
+          <div class="status-row">
+            <span class="status-dot" id="release-dot"></span>
+            <p id="release-state">Loading latest release metadata...</p>
+          </div>
+          <dl class="release-meta">
+            <div>
+              <dt>Version</dt>
+              <dd id="release-version">Checking...</dd>
+            </div>
+            <div>
+              <dt>Published</dt>
+              <dd id="release-date">Checking...</dd>
+            </div>
+            <div>
+              <dt>Asset</dt>
+              <dd id="release-asset">BluButtonBridge-full.bin</dd>
+            </div>
+            <div>
+              <dt>Size</dt>
+              <dd id="release-size">Checking...</dd>
+            </div>
+          </dl>
+
+          <div class="install-wrap">
+            <esp-web-install-button id="install-button">
+              <button slot="activate" class="install-button">Install Latest Release</button>
+              <span slot="unsupported" class="support-copy">
+                Use Google Chrome or Microsoft Edge on desktop with HTTPS enabled.
+              </span>
+              <span slot="not-allowed" class="support-copy">
+                Open this page over HTTPS to use Web Serial.
+              </span>
+            </esp-web-install-button>
+          </div>
+
+          <div class="action-row">
+            <a id="release-link" class="secondary-link" href="https://github.com/robertoamd90/blu-button-bridge/releases/latest" target="_blank" rel="noreferrer">Open latest release</a>
+            <a id="asset-link" class="secondary-link" href="https://github.com/robertoamd90/blu-button-bridge/releases/latest/download/BluButtonBridge-full.bin" target="_blank" rel="noreferrer">Download full image</a>
+          </div>
+          <p class="hint" id="install-hint">
+            This installer tracks the latest public GitHub release automatically.
+          </p>
+        </section>
+
+        <section class="card stack">
+          <div>
+            <p class="mini-title">Supported hardware</p>
+            <h2>Current target</h2>
+            <p>ESP32 DevKit V1 with ESP-WROOM-32 and 4 MB flash.</p>
+          </div>
+          <div class="pill-row">
+            <span class="pill">ESP32</span>
+            <span class="pill">4 MB flash</span>
+            <span class="pill">USB data cable</span>
+          </div>
+          <p class="hint">
+            Other ESP32-family boards may connect, but this installer is currently published for the primary
+            BluButtonBridge hardware target only.
+          </p>
+        </section>
+      </div>
+    </header>
+
+    <main class="content-grid">
+      <section class="card">
+        <p class="mini-title">How it works</p>
+        <h2>Three-minute setup</h2>
+        <ol class="steps">
+          <li>Connect the ESP32 to your computer with a USB data cable.</li>
+          <li>Open this page in Chrome or Edge and click <strong>Install Latest Release</strong>.</li>
+          <li>Select the serial port, confirm erase/install if prompted, and wait for flashing to finish.</li>
+          <li>After reboot, join the <code>BBB-XXXXXX</code> access point or open the device on your local network.</li>
+        </ol>
+      </section>
+
+      <section class="card">
+        <p class="mini-title">After install</p>
+        <h2>What to expect</h2>
+        <ul class="plain-list">
+          <li>The first-time fallback AP starts automatically when no WiFi credentials are saved.</li>
+          <li>The built-in web UI lets you configure WiFi, MQTT, GPIO actions, BLE devices, and OTA updates.</li>
+          <li>The GitHub OTA flow inside the device remains available for future upgrades.</li>
+        </ul>
+      </section>
+
+      <section class="card card-warning">
+        <p class="mini-title">Notes</p>
+        <h2>Before you flash</h2>
+        <ul class="plain-list">
+          <li>This page requires HTTPS plus Web Serial browser support.</li>
+          <li>The release must include <code>BluButtonBridge-full.bin</code> or install will be blocked.</li>
+          <li>If browser install is unavailable, you can still download the same release asset and flash it manually.</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -397,6 +397,27 @@ idf.py -p /dev/cu.usbserial-0001 monitor
 
 If flash hangs on `Connecting...`, hold the **BOOT** button on the ESP32 until it starts.
 
+## Browser installer
+
+This repository now includes a GitHub Pages installer site powered by `ESP Web Tools`.
+
+- Expected project URL: `https://robertoamd90.github.io/blu-button-bridge/`
+- Installer source: [`site/index.html`](site/index.html)
+- Deploy workflow: [`.github/workflows/pages.yml`](.github/workflows/pages.yml)
+
+How it works:
+
+- the page queries the latest public GitHub release
+- it looks for `BluButtonBridge-full.bin`
+- it generates an `ESP Web Tools` manifest dynamically in the browser
+- if GitHub release metadata is temporarily unavailable, it falls back to the documented `releases/latest/download/...` URL
+
+Requirements:
+
+- GitHub Pages must be enabled for this repository with deployment source set to GitHub Actions
+- the latest release must include `BluButtonBridge-full.bin`
+- users need Chrome or Edge on a desktop-class browser with Web Serial support
+
 ---
 
 ## Troubleshooting
