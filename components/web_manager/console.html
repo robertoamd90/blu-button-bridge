@@ -173,7 +173,7 @@
     source.addEventListener('notice', (event) => appendLine('[console] ' + event.data, 'notice'));
     source.addEventListener('replaced', (event) => {
       appendLine('[console] ' + event.data, 'notice');
-      statusEl.textContent = 'Superseded by a newer console tab';
+      statusEl.textContent = 'Superseded by another process';
       source.close();
     });
     initTheme();
