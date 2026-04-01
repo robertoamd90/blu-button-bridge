@@ -4,8 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CONSOLE_MANAGER_MAX_LINES      64
-#define CONSOLE_MANAGER_MAX_LINE_LEN   192
+#define CONSOLE_MANAGER_MAX_LINES      48
+#define CONSOLE_MANAGER_MAX_LINE_LEN   160
 
 typedef struct {
     uint32_t seq;
