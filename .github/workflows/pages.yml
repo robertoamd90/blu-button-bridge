@@ -1,16 +1,9 @@
 name: Deploy installer site
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/pages.yml"
-      - "site/**"
   release:
     types:
       - published
-  workflow_dispatch:
 
 permissions:
   contents: read
