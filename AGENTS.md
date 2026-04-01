@@ -59,3 +59,8 @@ If tooling is unstable, say that explicitly instead of claiming review is comple
   - `BluButtonBridge-full.bin`
 - Report SHA-256 for both artifacts.
 - Keep `dist/` untracked unless explicitly requested otherwise.
+- GitHub release notes should use a short, uniform format:
+  - default to a single `## Changes` section
+  - use 2-5 concrete bullets describing user-visible or structurally important changes
+  - avoid vague summaries like "latest fixes" or repeating artifact/checksum lists already visible in the release UI
+  - add `## Notes` only when a release needs a short warning, migration note, or exceptional caveat

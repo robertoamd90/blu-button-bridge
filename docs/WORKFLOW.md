@@ -124,6 +124,11 @@ When preparing a release:
    - `BluButtonBridge.bin`
    - `BluButtonBridge-full.bin`
 9. record SHA-256 checksums for both binaries
+10. write GitHub release notes using the standard repo format:
+   - `## Changes`
+   - 2-5 concrete bullets
+   - optional `## Notes` only when needed
+   - do not repeat artifact lists or checksum blocks in the body unless the user explicitly asks for them there
 
 Why the tag comes before the build:
 
@@ -136,6 +141,24 @@ Why the tag comes before the build:
 - `BluButtonBridge.bin` is the OTA binary
 - `BluButtonBridge-full.bin` is the full flash image from `0x0`
 - `dist/` is local generated output and should remain untracked unless explicitly requested otherwise
+
+### Release note style
+
+Preferred default:
+
+```md
+## Changes
+- ...
+- ...
+- ...
+```
+
+Use `## Notes` only for short exceptional context such as:
+
+- asset caveats
+- migration steps
+- known limits
+- deprecation warnings
 
 ## 5. UI / UX guardrails
 
