@@ -6,7 +6,7 @@ const RELEASES_URL = `https://github.com/${OWNER}/${REPO}/releases`;
 const LATEST_RELEASE_URL = `${RELEASES_URL}/latest`;
 const API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
 const ASSET_NAME = "BluButtonBridge-full.bin";
-const PAGES_ASSET_URL = "./firmware/BluButtonBridge-full.bin";
+const PAGES_ASSET_URL = new URL("./firmware/BluButtonBridge-full.bin", window.location.href).href;
 
 const installButton = document.querySelector("#install-button");
 const releaseDot = document.querySelector("#release-dot");
