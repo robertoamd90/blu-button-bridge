@@ -98,6 +98,24 @@ Look for:
 - boot takeover
 - failure recovery
 
+## Console streaming or serial log capture
+
+Start with:
+
+- `components/web_manager/web_manager.c`
+- `components/web_manager/console.html`
+- `components/console_manager/console_manager.c`
+- `components/console_manager/include/console_manager.h`
+- `docs/CONSOLE_STREAM_CONTRACT.md`
+- `docs/RUNTIME_FLOW.md`
+
+Look for:
+
+- SSE stream behavior
+- backlog ownership
+- single-client replacement semantics
+- work that must stay out of the `httpd` task
+
 ## Backup / restore or persisted config
 
 Start with:
@@ -144,3 +162,21 @@ Look for:
 - `git describe --tags --always --dirty`
 - tag-before-build rule
 - artifact naming and checksum reporting
+
+## Browser installer or GitHub Pages deploy
+
+Start with:
+
+- `site/index.html`
+- `site/app.js`
+- `site/styles.css`
+- `.github/workflows/pages.yml`
+- `docs/PAGES_INSTALLER_CONTRACT.md`
+- `README.md`
+
+Look for:
+
+- latest release asset expectations
+- mirrored Pages payload structure
+- installer URL and documentation links
+- browser-facing install flow

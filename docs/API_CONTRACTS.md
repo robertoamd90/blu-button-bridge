@@ -9,6 +9,7 @@ All routes below require auth when HTTP Basic Auth is enabled.
 
 | Method | Endpoint | Notes |
 |--------|----------|-------|
+| `GET` | `/api/console/stream` | SSE stream with backlog + live console lines |
 | `GET` | `/api/status` | Status snapshot; response shape documented here |
 | `GET` | `/api/wifi/config` | Response shape documented here |
 | `GET` | `/api/wifi/scan` | Returns array of `{ssid,rssi}` |
@@ -72,6 +73,15 @@ Read endpoints usually return either:
 - or a JSON array of objects
 
 They do not always include an outer `ok` flag.
+
+### Non-JSON transport notes
+
+Not every HTTP endpoint in the web surface is JSON:
+
+- `/api/console/stream` uses SSE
+- `/api/system/ota` accepts a raw binary request body
+
+Do not generalize JSON assumptions across the whole HTTP surface.
 
 ## 2. System and OTA contracts
 

@@ -46,6 +46,65 @@ Non-trivial work must go through three independent reviews:
 - `simplifier`
   - looks for duplication, unnecessary branches, redundant state, and patch-on-patch complexity
 
+This section applies to review-phase agents only.
+It does not impose the same response format on generic agents doing implementation or exploration work.
+
+### Review-agent output contract
+
+Invoke each review agent with a request for structured output.
+Free-form feedback is not sufficient unless it is still clearly organized into the required sections below.
+
+Minimum shared rules for all three review agents:
+
+- keep findings practical and actionable
+- cite specific files when pointing at an issue
+- prefer severity-labelled findings when reporting problems
+- say explicitly when there are no material findings
+- avoid generic praise or vague “looks good” responses without a verdict
+
+Required sections for every review agent:
+
+- `VERDICT`
+  - one of:
+    - `APPROVE`
+    - `APPROVE WITH NOTES`
+    - `CHANGES REQUESTED`
+- `FINDINGS`
+  - ordered by severity
+  - each finding should use `HIGH`, `MEDIUM`, or `LOW`
+  - each finding should explain the concrete risk or cleanup needed
+- `OPEN QUESTIONS`
+  - optional when there are no open questions
+
+If there are no material findings, require this explicitly:
+
+- `VERDICT`
+- `FINDINGS`
+  - `NO MATERIAL FINDINGS`
+
+### Role-specific expectations
+
+`reviewer` should focus on:
+
+- bugs
+- regressions
+- edge cases
+- missing validation or test coverage
+
+`architect` should focus on:
+
+- module boundaries
+- ownership
+- layering
+- whether the change fits the intended project structure
+
+`simplifier` should focus on:
+
+- duplication
+- unnecessary branches or flags
+- redundant state
+- ways to reduce patch-on-patch complexity
+
 ### Completion rule
 
 Review is not complete until:
@@ -185,6 +244,25 @@ Test at least:
 - refresh behavior
 - mobile layout sanity
 - any new persistence behavior such as URL hashes or retained state
+
+### Console streaming changes
+
+Test at least:
+
+- `/console` still loads
+- backlog appears on connect
+- live streaming continues after backlog
+- opening a second viewer replaces the first one cleanly
+- the stream does not monopolize the HTTP server task
+
+### Browser installer / Pages changes
+
+Test at least:
+
+- the README link points at the expected public installer URL
+- the latest-release happy path still exposes a usable install button
+- fallback behavior still works when live GitHub metadata cannot be fetched
+- missing required release asset produces an explicit blocked-install state
 
 ### Runtime / connectivity changes
 

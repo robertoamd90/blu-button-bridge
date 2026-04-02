@@ -38,6 +38,21 @@ When the change touches a specific area, validate at least:
 - any newly added persistence behavior
 - dark/light handling if touched
 
+### Console streaming
+
+- `/console` still loads
+- backlog appears immediately on connect
+- live lines continue after backlog
+- opening a second viewer replaces the first cleanly
+- HTTP handling stays responsive while streaming
+
+### Browser installer / Pages
+
+- the public installer link still matches the intended Pages URL
+- the mirrored full image path still matches the browser manifest
+- metadata fallback still leaves the install button usable
+- missing required release asset is surfaced clearly
+
 ### Runtime / connectivity
 
 - boot still completes
