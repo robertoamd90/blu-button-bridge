@@ -380,10 +380,12 @@ static void handle_adv(const uint8_t mac[6], const uint8_t *adv, uint8_t adv_len
         }
 
         if (obj_id == BTN_OBJ_ID) {
-            saw_button_event = true;
             button_event = plaintext[pi];
-            mqtt_mask = get_mqtt_event_mask(dev, button_event);
-            gpio_mask = get_gpio_event_mask(dev, button_event);
+            if (button_event != BLE_BUTTON_EVENT_NONE) {
+                saw_button_event = true;
+                mqtt_mask = get_mqtt_event_mask(dev, button_event);
+                gpio_mask = get_gpio_event_mask(dev, button_event);
+            }
         }
         pi += dlen;
     }
