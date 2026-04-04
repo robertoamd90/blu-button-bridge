@@ -294,6 +294,29 @@ static void system_led_timer_cb(TimerHandle_t timer)
 static void system_led_apply_mode(system_led_mode_t mode)
 {
     if (!s_system_led_timer) return;
+
+    if (mode == s_system_led_mode) {
+        if (mode == SYSTEM_LED_OFF) {
+            xTimerStop(s_system_led_timer, 0);
+            s_system_led_level = false;
+            s_system_led_phase = 0;
+            gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
+            return;
+        }
+
+        // Boot can replay the same composite LED mode several times in quick
+        // succession as callbacks are registered. Avoid stop/start churn for
+        // the same mode, but recover if the timer is not currently running.
+        if (xTimerIsTimerActive(s_system_led_timer) == pdFALSE) {
+            s_system_led_level = false;
+            s_system_led_phase = 0;
+            gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
+            xTimerChangePeriod(s_system_led_timer, pdMS_TO_TICKS(150), 0);
+            xTimerStart(s_system_led_timer, 0);
+        }
+        return;
+    }
+
     xTimerStop(s_system_led_timer, 0);
 
     s_system_led_mode = mode;
