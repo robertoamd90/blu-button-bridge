@@ -7,6 +7,7 @@ const LATEST_RELEASE_URL = `${RELEASES_URL}/latest`;
 const API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
 const ASSET_NAME = "BluButtonBridge-full.bin";
 const PAGES_ASSET_URL = new URL("./firmware/BluButtonBridge-full.bin", window.location.href).href;
+const MIRROR_METADATA_URL = new URL("./firmware/metadata.json", window.location.href).href;
 
 const installButton = document.querySelector("#install-button");
 const releaseDot = document.querySelector("#release-dot");
@@ -52,6 +53,21 @@ function formatBytes(value) {
   return `${size.toFixed(size >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
 }
 
+function normalizeDigest(value) {
+  if (!value) return "";
+  return String(value).trim().toLowerCase().replace(/^sha256:/, "");
+}
+
+async function loadMirrorMetadata() {
+  try {
+    const response = await fetch(MIRROR_METADATA_URL, { cache: "no-store" });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (error) {
+    return null;
+  }
+}
+
 function buildManifest(version) {
   return {
     name: PROJECT_NAME,
@@ -78,17 +94,35 @@ function applyManifest(version) {
   installButton.manifest = manifestUrl;
 }
 
-function useFallbackManifest(message) {
-  applyManifest("latest");
-  releaseVersion.textContent = "latest";
-  releaseDate.textContent = "Latest deployed build";
-  releaseSize.textContent = "Served from this site";
-  installHint.textContent = "Release metadata could not be loaded live, but the install button still uses the same-origin firmware mirrored into this Pages site.";
+function useFallbackManifest(message, mirror) {
+  const version = mirror?.tag || "latest";
+  applyManifest(version);
+  installButton.hidden = false;
+  releaseVersion.textContent = version;
+  releaseDate.textContent = mirror?.published_at ? formatDate(mirror.published_at) : "Latest deployed build";
+  releaseSize.textContent = Number.isFinite(mirror?.asset_size) ? formatBytes(mirror.asset_size) : "Served from this site";
+  releaseLink.href = mirror?.html_url || LATEST_RELEASE_URL;
+  assetLink.href = PAGES_ASSET_URL;
+  assetLink.textContent = "Download mirrored full image";
+  installHint.textContent = "Release metadata could not be loaded live, but the install button still uses the mirrored firmware currently deployed in this Pages site.";
+  setStatus("warning", message);
+}
+
+function blockInstallForMirrorMismatch(release, asset, message) {
+  installButton.hidden = true;
+  releaseVersion.textContent = release.tag_name || "Unknown";
+  releaseDate.textContent = formatDate(release.published_at);
+  releaseSize.textContent = formatBytes(asset?.size);
+  releaseLink.href = release.html_url || LATEST_RELEASE_URL;
+  assetLink.href = asset?.browser_download_url || release.html_url || LATEST_RELEASE_URL;
+  assetLink.textContent = "Download latest release asset";
+  installHint.textContent = "The Pages mirror is not yet confirmed to match the latest release, so browser install is temporarily blocked.";
   setStatus("warning", message);
 }
 
 async function loadLatestRelease() {
   setStatus("warning", "Checking the latest public release...");
+  const mirror = await loadMirrorMetadata();
 
   let response;
   try {
@@ -98,12 +132,12 @@ async function loadLatestRelease() {
       },
     });
   } catch (error) {
-    useFallbackManifest("GitHub metadata is temporarily unavailable. Falling back to the latest release redirect.");
+    useFallbackManifest("GitHub metadata is temporarily unavailable. Falling back to the mirrored firmware currently deployed on this site.", mirror);
     return;
   }
 
   if (!response.ok) {
-    useFallbackManifest(`GitHub returned ${response.status}. Falling back to the latest release redirect.`);
+    useFallbackManifest(`GitHub returned ${response.status}. Falling back to the mirrored firmware currently deployed on this site.`, mirror);
     return;
   }
 
@@ -117,8 +151,28 @@ async function loadLatestRelease() {
     releaseVersion.textContent = release.tag_name || "Unknown";
     releaseDate.textContent = formatDate(release.published_at);
     releaseSize.textContent = "Missing";
+    assetLink.href = release.html_url || LATEST_RELEASE_URL;
+    assetLink.textContent = "Open latest release";
     installHint.textContent = "The latest release is missing the full flash image required by ESP Web Tools.";
     setStatus("error", `Latest release found, but ${ASSET_NAME} is missing.`);
+    return;
+  }
+
+  const releaseDigest = normalizeDigest(asset.digest);
+  const mirrorDigest = normalizeDigest(mirror?.asset_sha256);
+
+  if (!releaseDigest) {
+    blockInstallForMirrorMismatch(release, asset, "Latest release metadata is missing the SHA-256 digest needed to verify the Pages mirror.");
+    return;
+  }
+
+  if (!mirrorDigest) {
+    blockInstallForMirrorMismatch(release, asset, "The Pages mirror metadata is missing, so browser install cannot confirm it matches the latest release.");
+    return;
+  }
+
+  if (releaseDigest !== mirrorDigest) {
+    blockInstallForMirrorMismatch(release, asset, "Latest release found, but the Pages mirror is still out of sync.");
     return;
   }
 
@@ -129,7 +183,8 @@ async function loadLatestRelease() {
   releaseSize.textContent = formatBytes(asset.size);
   releaseLink.href = release.html_url || LATEST_RELEASE_URL;
   assetLink.href = PAGES_ASSET_URL;
-  installHint.textContent = "The install button now uses the firmware mirrored into this Pages site from the latest public release.";
+  assetLink.textContent = "Download mirrored full image";
+  installHint.textContent = "The install button now uses the mirrored firmware, confirmed to match the latest public release digest.";
   setStatus("ready", "Latest release ready for browser install.");
 }
 

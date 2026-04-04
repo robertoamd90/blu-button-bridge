@@ -31,13 +31,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name }}"
+          RELEASE_JSON="$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}")"
+          printf '%s' "$RELEASE_JSON" | jq -e '.assets[] | select(.name == "BluButtonBridge-full.bin" and .digest and .browser_download_url)' >/dev/null
+
           rm -rf _site
           mkdir -p _site/firmware
           cp -R site/. _site/
           gh release download \
+            "$TAG" \
             --repo "${{ github.repository }}" \
             --pattern "BluButtonBridge-full.bin" \
             --dir _site/firmware
+
+          printf '%s' "$RELEASE_JSON" | jq -c \
+            --arg asset_name "BluButtonBridge-full.bin" \
+            '{
+              tag: .tag_name,
+              published_at: .published_at,
+              html_url: .html_url,
+              asset_name: $asset_name,
+              asset_size: ($asset_name as $name | .assets[] | select(.name == $name) | .size),
+              asset_sha256: ($asset_name as $name | .assets[] | select(.name == $name) | .digest),
+              browser_download_url: ($asset_name as $name | .assets[] | select(.name == $name) | .browser_download_url)
+            }' > _site/firmware/metadata.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
