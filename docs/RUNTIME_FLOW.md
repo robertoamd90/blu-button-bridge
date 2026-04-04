@@ -139,11 +139,19 @@ Owners:
 HTTP/UI phase:
 
 1. UI calls `GET /api/system/update/check`
-2. `web_manager` fetches latest GitHub release metadata
-3. selected release info is cached in RAM
-4. UI calls `POST /api/system/update`
-5. `web_manager` stages the OTA job in NVS via `ota_manager_stage_github_job(...)`
-6. device reboots
+2. `web_manager` first closes active console SSE viewers and waits briefly for them to unwind
+3. `web_manager` fetches latest GitHub release metadata
+4. selected release info is cached in RAM
+5. UI calls `POST /api/system/update`
+6. `web_manager` stages the OTA job in NVS via `ota_manager_stage_github_job(...)`
+7. device reboots
+
+Important note:
+
+- closing console viewers during `GET /api/system/update/check` is intentional
+- reason:
+  - an attached console SSE session can leave too little free heap for reliable outbound GitHub HTTPS/TLS setup
+  - the brief wait allows the replaced stream to release memory before the update check continues
 
 Boot takeover phase:
 

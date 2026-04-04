@@ -1601,6 +1601,10 @@ static void ota_unlock(void)
 static esp_err_t handle_update_check(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
+    // Intentionally close active console streams before the GitHub check.
+    // With the SSE console viewer still attached, free heap can drop enough
+    // to make the outbound HTTPS/TLS setup unreliable for update verification.
+    // The short delay gives the replaced stream time to unwind and release memory.
     console_stream_close_all();
     vTaskDelay(pdMS_TO_TICKS(300));
     github_release_info_t release;
@@ -1850,8 +1854,8 @@ static esp_err_t handle_config_download(httpd_req_t *req)
 // POST /api/system/config  (JSON body)
 static esp_err_t handle_config_restore(httpd_req_t *req)
 {
-    if (req->content_len <= 0 || req->content_len > 8192)
-        return send_error(req, "body too large (max 8 KB)");
+    if (req->content_len <= 0 || req->content_len > 12288)
+        return send_error(req, "body too large (max 12 KB)");
 
     char *body = malloc(req->content_len + 1);
     if (!body) return send_error(req, "out of memory");

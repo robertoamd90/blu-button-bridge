@@ -84,6 +84,12 @@ Current model:
   - `notice`
   - `Some older log lines were dropped from the in-memory backlog.`
 
+Additional runtime interaction:
+
+- `GET /api/system/update/check` intentionally closes active console viewers before performing the GitHub HTTPS check
+- reason:
+  - keeping the SSE console attached can reduce free heap enough to make outbound update-check TLS setup unreliable
+
 Important constraint:
 
 - `Clear View` in the browser is client-side only
