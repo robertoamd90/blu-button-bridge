@@ -99,8 +99,8 @@ Detailed request and response contracts live in [docs/API_CONTRACTS.md](docs/API
 | GPIO output actions | 16 |
 | WiFi scan results | 20 |
 | AP clients | 4 |
-| MQTT payload | 1024 bytes |
-| MQTT topic | 128 chars |
+| MQTT action payload | 31 chars |
+| MQTT action topic | 63 chars |
 | Labels / names | 32 chars |
 
 ## Build And Flash

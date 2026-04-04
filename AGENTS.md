@@ -42,6 +42,7 @@ If documents overlap or appear to conflict:
 - Stop and realign when a change starts bending module boundaries or introducing ad hoc flags.
 - Keep `app_main()` linear and lightweight.
 - Put domain logic in the owning module instead of in transport or bootstrap code.
+- If you add, remove, or rename an HTTP route in `components/web_manager/web_manager.c`, update the relevant API documentation in `docs/API_CONTRACTS.md` before considering the work complete.
 
 ## Validation
 
