@@ -18,11 +18,13 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_app_desc.h"
+#include "board_config.h"
 #include "wifi_manager.h"
 #include "mqtt_manager.h"
 #include "gpio_manager.h"
 #include "web_manager.h"
 #include "ota_manager.h"
+#include "ota_release_profile.h"
 #include "ble_access.h"
 #include "console_manager.h"
 
@@ -35,7 +37,6 @@ static const char *AUTH_NS = "http_auth";
 #define GITHUB_HTTP_TX_BUFFER_SIZE 1024
 #define GITHUB_HTTP_MAX_REDIRECTS  5
 static const char *GITHUB_RELEASE_URL = "https://api.github.com/repos/robertoamd90/blu-button-bridge/releases/latest";
-static const char *GITHUB_ASSET_NAME  = "BluButtonBridge.bin";
 
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
@@ -271,6 +272,7 @@ typedef struct {
     char tag[32];
     char version_label[40];
     char html_url[256];
+    char asset_name[80];
     char download_url[512];
     char digest_hex[65];
     int asset_size;
@@ -430,6 +432,10 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
 {
     if (!info) return ESP_ERR_INVALID_ARG;
     memset(info, 0, sizeof(*info));
+    const char *expected_asset_name = ota_release_profile_ota_asset_name();
+    if (!expected_asset_name || expected_asset_name[0] == '\0') {
+        return ESP_ERR_INVALID_STATE;
+    }
 
     http_buffer_t buffer = {0};
 
@@ -459,7 +465,7 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
     cJSON *asset = NULL;
     cJSON_ArrayForEach(asset, assets) {
         cJSON *name = cJSON_GetObjectItem(asset, "name");
-        if (!cJSON_IsString(name) || strcmp(name->valuestring, GITHUB_ASSET_NAME) != 0) continue;
+        if (!cJSON_IsString(name) || strcmp(name->valuestring, expected_asset_name) != 0) continue;
 
         cJSON *download_url = cJSON_GetObjectItem(asset, "browser_download_url");
         cJSON *digest = cJSON_GetObjectItem(asset, "digest");
@@ -467,6 +473,7 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
         if (!cJSON_IsString(download_url) || !cJSON_IsString(digest) || !cJSON_IsNumber(size)) break;
         if (!parse_github_digest(digest->valuestring, info->digest_hex, sizeof(info->digest_hex))) break;
 
+        strlcpy(info->asset_name, name->valuestring, sizeof(info->asset_name));
         strlcpy(info->download_url, download_url->valuestring, sizeof(info->download_url));
         info->asset_size = (int)size->valuedouble;
         found_asset = true;
@@ -1605,11 +1612,17 @@ static esp_err_t handle_update_check(httpd_req_t *req)
     // With the SSE console viewer still attached, free heap can drop enough
     // to make the outbound HTTPS/TLS setup unreliable for update verification.
     // The short delay gives the replaced stream time to unwind and release memory.
+    const char *expected_asset_name = ota_release_profile_ota_asset_name();
     console_stream_close_all();
     vTaskDelay(pdMS_TO_TICKS(300));
     github_release_info_t release;
     esp_err_t err = github_fetch_latest_release(&release);
-    if (err == ESP_ERR_NOT_FOUND) return send_error(req, "latest release is missing BluButtonBridge.bin or its sha256 digest");
+    if (err == ESP_ERR_NOT_FOUND) {
+        char msg[160];
+        snprintf(msg, sizeof(msg), "latest release is missing %s or its sha256 digest",
+                 expected_asset_name ? expected_asset_name : "the expected OTA asset");
+        return send_error(req, msg);
+    }
     if (err != ESP_OK) return send_error(req, "could not fetch latest GitHub release");
 
     char current_version[40];
@@ -1621,7 +1634,7 @@ static esp_err_t handle_update_check(httpd_req_t *req)
     cJSON_AddStringToObject(obj, "latest_version", release.version_label);
     cJSON_AddBoolToObject(obj, "update_available", compare_versions_for_update(release.tag, app->version) > 0);
     cJSON_AddStringToObject(obj, "release_url", release.html_url);
-    cJSON_AddStringToObject(obj, "asset_name", GITHUB_ASSET_NAME);
+    cJSON_AddStringToObject(obj, "asset_name", release.asset_name);
     cJSON_AddNumberToObject(obj, "asset_size", release.asset_size);
     s_last_github_release = release;
     send_cjson(req, obj);

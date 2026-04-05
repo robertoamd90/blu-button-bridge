@@ -204,6 +204,19 @@ h2 {
   margin-bottom: 16px;
 }
 
+.board-select {
+  width: 100%;
+  min-height: 46px;
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  padding: 0 14px;
+}
+
 .install-button {
   border: 0;
   padding: 14px 24px;

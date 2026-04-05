@@ -112,7 +112,7 @@ Success response:
   "latest_version": "v1.3.2",
   "update_available": true,
   "release_url": "https://github.com/.../releases/tag/v1.3.2",
-  "asset_name": "BluButtonBridge.bin",
+  "asset_name": "BluButtonBridge-esp32c3-supermini.bin",
   "asset_size": 1234567
 }
 ```
@@ -226,7 +226,9 @@ Current failure reasons written in practice:
 GitHub OTA external contract:
 
 - source repo: this repository's GitHub releases
-- asset selection: `BluButtonBridge.bin`
+- asset selection is board-specific:
+  - `BluButtonBridge-esp32-devkit-v1.bin`
+  - `BluButtonBridge-esp32c3-supermini.bin`
 - trust/check source: GitHub-provided SHA-256 digest from the release metadata path already used by `web_manager`
 - success path:
   - stage job

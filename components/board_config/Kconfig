@@ -1,0 +1,20 @@
+menu "BluButtonBridge"
+
+choice BBB_BOARD_PROFILE
+    prompt "Board profile"
+    default BBB_BOARD_ESP32_DEVKIT_V1 if IDF_TARGET_ESP32
+    default BBB_BOARD_ESP32C3_SUPERMINI if IDF_TARGET_ESP32C3
+    help
+        Select the concrete board profile so board-specific GPIO mappings stay
+        outside the shared firmware modules.
+
+    config BBB_BOARD_ESP32_DEVKIT_V1
+        bool "ESP32 DevKit V1"
+        depends on IDF_TARGET_ESP32
+
+    config BBB_BOARD_ESP32C3_SUPERMINI
+        bool "ESP32-C3 SuperMini (common pinout)"
+        depends on IDF_TARGET_ESP32C3
+endchoice
+
+endmenu

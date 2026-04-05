@@ -21,7 +21,7 @@
       <p class="eyebrow">GitHub Pages Installer</p>
       <h1>Install BluButtonBridge from the browser</h1>
       <p class="lead">
-        Flash the latest public <code>BluButtonBridge-full.bin</code> release onto a supported ESP32
+        Flash the latest public board-specific full image onto a supported ESP32-family board
         without opening the terminal.
       </p>
 
@@ -41,8 +41,12 @@
               <dd id="release-date">Checking...</dd>
             </div>
             <div>
+              <dt>Board</dt>
+              <dd id="release-board">ESP32 DevKit V1</dd>
+            </div>
+            <div>
               <dt>Asset</dt>
-              <dd id="release-asset">BluButtonBridge-full.bin</dd>
+              <dd id="release-asset">BluButtonBridge-esp32-devkit-v1-full.bin</dd>
             </div>
             <div>
               <dt>Size</dt>
@@ -64,27 +68,31 @@
 
           <div class="action-row">
             <a id="release-link" class="secondary-link" href="https://github.com/robertoamd90/blu-button-bridge/releases/latest" target="_blank" rel="noreferrer">Open latest release</a>
-            <a id="asset-link" class="secondary-link" href="./firmware/BluButtonBridge-full.bin" target="_blank" rel="noreferrer">Download mirrored full image</a>
+            <a id="asset-link" class="secondary-link" href="./firmware/BluButtonBridge-esp32-devkit-v1-full.bin" target="_blank" rel="noreferrer">Download mirrored full image</a>
           </div>
           <p class="hint" id="install-hint">
-            This installer serves a same-origin copy of the latest public full image.
+            This installer serves a same-origin copy of the latest public full image for the selected board.
           </p>
         </section>
 
         <section class="card stack">
           <div>
             <p class="mini-title">Supported hardware</p>
-            <h2>Current target</h2>
-            <p>ESP32 DevKit V1 with ESP-WROOM-32 and 4 MB flash.</p>
+            <h2>Choose a board profile</h2>
+            <label class="mini-title" for="board-select">Board</label>
+            <select id="board-select" class="board-select">
+              <option value="esp32-devkit-v1">ESP32 DevKit V1</option>
+              <option value="esp32c3-supermini">ESP32-C3 SuperMini</option>
+            </select>
+            <p id="board-summary">ESP32 DevKit V1 with ESP-WROOM-32 and 4 MB flash.</p>
           </div>
-          <div class="pill-row">
+          <div class="pill-row" id="board-pills">
             <span class="pill">ESP32</span>
             <span class="pill">4 MB flash</span>
             <span class="pill">USB data cable</span>
           </div>
-          <p class="hint">
-            Other ESP32-family boards may connect, but this installer is currently published for the primary
-            BluButtonBridge hardware target only.
+          <p class="hint" id="board-hint">
+            Select the board you want to flash. The installer and mirrored asset switch together.
           </p>
         </section>
       </div>
@@ -96,7 +104,7 @@
         <h2>Three-minute setup</h2>
         <ol class="steps">
           <li>Connect the ESP32 to your computer with a USB data cable.</li>
-          <li>Open this page in Chrome or Edge and click <strong>Install Latest Release</strong>.</li>
+          <li>Select the correct board profile, then click <strong>Install Latest Release</strong>.</li>
           <li>Select the serial port, confirm erase/install if prompted, and wait for flashing to finish.</li>
           <li>After reboot, join the <code>BBB-XXXXXX</code> access point or open the device on your local network.</li>
         </ol>
@@ -117,7 +125,7 @@
         <h2>Before you flash</h2>
         <ul class="plain-list">
           <li>This page requires HTTPS plus Web Serial browser support.</li>
-          <li>The release must include <code>BluButtonBridge-full.bin</code> or install will be blocked.</li>
+          <li>The latest release must include the full image for the selected board or install will be blocked.</li>
           <li>If browser install is unavailable, you can still download the same release asset and flash it manually.</li>
         </ul>
       </section>

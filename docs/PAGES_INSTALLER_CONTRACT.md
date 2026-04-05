@@ -8,11 +8,27 @@ Relevant files:
 
 - `site/index.html`
 - `site/app.js`
+- `config/boards.json`
 - `site/styles.css`
 - `.github/workflows/pages.yml`
 - `README.md`
 
 This contract is about the public installer site served from GitHub Pages.
+
+## Board catalog source of truth
+
+Board identity for the installer and release asset naming is centralized in:
+
+- `config/boards.json`
+
+That catalog drives:
+
+- installer board choices and chip-family metadata in `site/app.js`
+- release asset download and mirrored metadata generation in `.github/workflows/pages.yml`
+- build/profile aliases in local helper scripts
+- generated OTA release-profile data consumed by the firmware
+
+The Pages workflow publishes that shared catalog into the site root as `./boards.json` so the browser installer can load it without depending on repository layout.
 
 ## Published URL
 
@@ -26,9 +42,10 @@ The README should link to that URL directly.
 
 The installer depends on the full flash image, not the OTA image.
 
-Expected release asset:
+Expected release assets:
 
-- `BluButtonBridge-full.bin`
+- `BluButtonBridge-esp32-devkit-v1-full.bin`
+- `BluButtonBridge-esp32c3-supermini-full.bin`
 
 This matters because:
 
@@ -43,25 +60,29 @@ Current workflow behavior in `.github/workflows/pages.yml`:
 - triggers on GitHub `release.published`
 - checks out the repository
 - copies `site/` into `_site/`
-- downloads `BluButtonBridge-full.bin` from the just-published release into `_site/firmware/`
+- reads `config/boards.json`
+- downloads every board-specific full image declared there from the just-published release into `_site/firmware/`
+- copies that shared catalog to `_site/boards.json`
 - uploads `_site/` as the Pages artifact
 - deploys that artifact to GitHub Pages
 
 Expected published payload includes:
 
 - site HTML/CSS/JS from `site/`
-- mirrored firmware at `./firmware/BluButtonBridge-full.bin`
+- mirrored firmware at:
+  - `./firmware/BluButtonBridge-esp32-devkit-v1-full.bin`
+  - `./firmware/BluButtonBridge-esp32c3-supermini-full.bin`
 - mirror metadata at `./firmware/metadata.json`
 
 ## Browser-side manifest contract
 
 Current `site/app.js` behavior:
 
+- loads board definitions from `./boards.json`
+- falls back to `../config/boards.json` for local source-tree previews
 - builds the `esp-web-tools` manifest dynamically in the browser
-- uses a same-origin firmware URL:
-  - `./firmware/BluButtonBridge-full.bin`
-- reads mirrored asset metadata from:
-  - `./firmware/metadata.json`
+- switches between same-origin board-specific firmware URLs
+- reads mirrored asset metadata from `./firmware/metadata.json`
 - uses the latest public GitHub release metadata to populate:
   - version
   - publish date
@@ -69,7 +90,7 @@ Current `site/app.js` behavior:
   - release link
 - compares the latest release asset digest with the mirrored asset digest before allowing browser install
 
-The actual install button flashes the same-origin mirrored full image, not a GitHub asset URL directly.
+The actual install button flashes the same-origin mirrored full image for the selected board, not a GitHub asset URL directly.
 
 ## Release metadata and fallback behavior
 
@@ -80,9 +101,9 @@ Current metadata source:
 Current success behavior:
 
 - release metadata loads
-- the latest release contains `BluButtonBridge-full.bin`
-- the mirrored metadata file is available
-- the mirrored asset digest matches the latest release asset digest
+- the latest release contains the selected board's full image asset
+- the mirrored metadata file contains the selected board entry
+- the mirrored asset digest matches the latest release asset digest for the selected board
 - the install button remains visible
 - the manifest version is updated to the release tag
 - the UI shows release metadata
@@ -93,7 +114,7 @@ Current fallback behavior when metadata fetch fails or returns non-OK:
 - the install button still points at the mirrored Pages asset
 - the UI warns that live metadata is unavailable
 
-Current failure behavior when metadata loads but the latest release is missing `BluButtonBridge-full.bin`:
+Current failure behavior when metadata loads but the latest release is missing the selected board asset:
 
 - the install button is hidden
 - the UI shows an error state
@@ -113,18 +134,18 @@ Current page copy assumes:
 - HTTPS
 - Web Serial availability
 
-Current target board expectation:
+Current board selector expectation:
 
 - ESP32 DevKit V1
-- ESP-WROOM-32
-- 4 MB flash
+- ESP32-C3 SuperMini
 
-If the hardware target or full image layout changes, update both the installer page and this contract.
+If the supported board list or full image layout changes, update both the installer page and this contract.
 
 ## Change guardrails
 
 Before changing the installer flow, verify:
 
+- whether `config/boards.json` still matches the supported boards and release asset names
 - whether the required release asset name is changing
 - whether the workflow still mirrors the full image into `./firmware/`
 - whether the workflow also writes matching metadata into `./firmware/metadata.json`
@@ -146,6 +167,7 @@ update both:
 - `README.md`
 - `site/index.html`
 - `site/app.js`
+- `config/boards.json`
 - `.github/workflows/pages.yml`
 
 ## Validation hints
@@ -154,7 +176,7 @@ When touching the Pages installer flow, validate at least:
 
 - the README installer link is clickable and points to the expected public URL
 - `site/` still renders with no broken local asset references
-- the install button manifest points at `./firmware/BluButtonBridge-full.bin`
+- the install button manifest points at the selected board's mirrored firmware path
 - the happy path works when the latest release includes the required asset
 - the happy path confirms digest match between GitHub metadata and mirrored metadata
 - the metadata-fallback path still leaves the install button usable

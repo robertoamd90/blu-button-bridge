@@ -23,9 +23,12 @@ Press a Shelly button, the ESP32 receives the encrypted BLE advertisement, and t
 ## Hardware
 
 - **ESP32 DevKit V1** (ESP-WROOM-32, 4 MB flash)
+- **ESP32-C3 SuperMini** using the common pinout profile in this repo
 - **Shelly BLU Button**
 
 ### GPIO pin map
+
+#### ESP32 DevKit V1
 
 | Pin | Usage |
 |-----|-------|
@@ -34,6 +37,16 @@ Press a Shelly button, the ESP32 receives the encrypted BLE advertisement, and t
 | 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33 | Available for user GPIO actions |
 
 Boot-sensitive and flash pins are excluded from user configuration.
+
+#### ESP32-C3 SuperMini (current board profile)
+
+| Pin | Usage |
+|-----|-------|
+| **9** | BOOT button, hold 3 s to start AP, hold 10 s to factory reset |
+| **8** | System LED, active-low |
+| 0, 1, 3, 4, 5, 6, 7, 10, 20, 21 | Available for user GPIO actions |
+
+This profile assumes the common SuperMini layout with onboard LED on GPIO 8 and BOOT on GPIO 9.
 
 ### Recovery shortcuts
 
@@ -111,24 +124,66 @@ Detailed request and response contracts live in [docs/API_CONTRACTS.md](docs/API
 mkdir -p ~/esp && cd ~/esp
 git clone --recursive https://github.com/espressif/esp-idf.git
 cd esp-idf
-PYTHON=$(which python3.12) ./install.sh esp32
+PYTHON=$(which python3.12) ./install.sh esp32 esp32c3
 ```
 
-### Build
+If you only plan to build the original ESP32 target, `./install.sh esp32` is still enough.
+
+### Build profiles
+
+The repository now keeps separate build profiles for the two supported compile targets:
+
+- `configs/sdkconfig.esp32` -> `build-esp32/`
+- `configs/sdkconfig.esp32c3` -> `build-esp32c3/`
+
+Each profile also selects a board definition through Kconfig:
+
+- `esp32` / `esp32-devkit-v1` -> `ESP32 DevKit V1`
+- `esp32c3` / `esp32c3-supermini` -> `ESP32-C3 SuperMini`
+
+Use the helper script so each target keeps its own `sdkconfig` and build directory:
 
 ```bash
 source ~/esp/esp-idf/export.sh
-idf.py -p /dev/cu.usbserial-0001 build flash
+scripts/idf-target.sh esp32 build
+scripts/idf-target.sh esp32c3 build
+```
+
+You can also use the board aliases:
+
+```bash
+scripts/idf-target.sh esp32-devkit-v1 build
+scripts/idf-target.sh esp32c3-supermini build
+```
+
+### Flash
+
+```bash
+source ~/esp/esp-idf/export.sh
+scripts/idf-target.sh esp32 flash
+```
+
+For a different serial port:
+
+```bash
+source ~/esp/esp-idf/export.sh
+ESPPORT=/dev/cu.usbmodem123 scripts/idf-target.sh esp32c3-supermini flash
 ```
 
 ### Monitor
 
 ```bash
 source ~/esp/esp-idf/export.sh
-idf.py -p /dev/cu.usbserial-0001 monitor
+scripts/idf-target.sh esp32 monitor
 ```
 
 If flash hangs on `Connecting...`, hold the **BOOT** button until flashing starts.
+
+### ESP32-C3 board profile
+
+The dual-target setup carries a separate board profile for the ESP32-C3 SuperMini, so GPIO, BOOT-button handling, and LED polarity are no longer inherited from the ESP32 DevKit V1 build.
+
+The source tree is still shared, and runtime validation on real hardware is still important, but the compile target and the board-level hardware assumptions now move together.
 
 ## Browser Installer
 
@@ -136,18 +191,38 @@ The repository also publishes a GitHub Pages installer based on `ESP Web Tools`.
 
 - Installer site: [robertoamd90.github.io/blu-button-bridge](https://robertoamd90.github.io/blu-button-bridge/)
 - Installer source: [site/index.html](site/index.html)
+- Shared board catalog: [config/boards.json](config/boards.json)
 - Pages workflow: [.github/workflows/pages.yml](.github/workflows/pages.yml)
 
-The installer uses the latest public release and expects `BluButtonBridge-full.bin` to be present in the release assets.
+The installer now serves board-specific full images from the latest public release:
+
+- `BluButtonBridge-esp32-devkit-v1-full.bin`
+- `BluButtonBridge-esp32c3-supermini-full.bin`
+
+The firmware OTA flow likewise expects board-specific OTA assets:
+
+- `BluButtonBridge-esp32-devkit-v1.bin`
+- `BluButtonBridge-esp32c3-supermini.bin`
+
+For local release packaging from existing build output:
+
+```bash
+source ~/esp/esp-idf/export.sh
+scripts/package-release.sh all
+```
+
+Board metadata for build aliases, installer options, and release asset naming is centralized in `config/boards.json`. The firmware OTA lookup consumes that same catalog through a generated OTA release profile during CMake configure, and the Pages workflow copies it into the published site as `boards.json`.
 
 ## Troubleshooting
 
 | Problem | Likely cause | Fix |
 |---------|-------------|-----|
 | `idf.py` not found | `export.sh` not sourced | `source ~/esp/esp-idf/export.sh` |
+| `jq` not found | board catalog helpers cannot resolve target metadata | install `jq` and retry the wrapper script |
+| `riscv32-esp-elf-gcc` not found | ESP32-C3 toolchain not installed | `cd ~/esp/esp-idf && ./install.sh esp32c3` |
 | Flash stuck on `Connecting...` | ESP32 not in flash mode | Hold **BOOT** during flash |
 | Port busy | Monitor open elsewhere | Close monitor with `Ctrl+T`, then `Ctrl+X` |
-| Build fails after fullclean | Target not set | `idf.py set-target esp32` then build |
+| Build fails after fullclean | Target/profile mismatch | Re-run with `scripts/idf-target.sh <target> reconfigure` |
 | Can't connect to AP WiFi | BLE scan is active during AP transition | Reboot and retry, AP should pause BLE scanning automatically |
 | GitHub OTA fails | No internet access or release metadata/assets are unavailable | Check STA connectivity and the latest release assets |
 | BLE device does not decrypt | Wrong key or key out of sync | Check the key in the Shelly app, then update or re-register the device |

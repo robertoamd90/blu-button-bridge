@@ -33,29 +33,60 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ github.event.release.tag_name }}"
+          BOARD_CATALOG="config/boards.json"
           RELEASE_JSON="$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}")"
-          printf '%s' "$RELEASE_JSON" | jq -e '.assets[] | select(.name == "BluButtonBridge-full.bin" and .digest and .browser_download_url)' >/dev/null
+          printf '%s' "$RELEASE_JSON" | jq -e --argfile boards "$BOARD_CATALOG" '
+            . as $release
+            | all(
+                $boards.boards[];
+                . as $board
+                | any(
+                    $release.assets[];
+                    .name == $board.full_asset_name and .digest and .browser_download_url
+                  )
+              )
+          ' >/dev/null
 
           rm -rf _site
           mkdir -p _site/firmware
           cp -R site/. _site/
-          gh release download \
-            "$TAG" \
-            --repo "${{ github.repository }}" \
-            --pattern "BluButtonBridge-full.bin" \
-            --dir _site/firmware
+          cp "$BOARD_CATALOG" _site/boards.json
+          while IFS= read -r asset_name; do
+            gh release download \
+              "$TAG" \
+              --repo "${{ github.repository }}" \
+              --pattern "$asset_name" \
+              --dir _site/firmware
+          done < <(jq -r '.boards[].full_asset_name' "$BOARD_CATALOG")
 
-          printf '%s' "$RELEASE_JSON" | jq -c \
-            --arg asset_name "BluButtonBridge-full.bin" \
-            '{
-              tag: .tag_name,
-              published_at: .published_at,
-              html_url: .html_url,
-              asset_name: $asset_name,
-              asset_size: ($asset_name as $name | .assets[] | select(.name == $name) | .size),
-              asset_sha256: ($asset_name as $name | .assets[] | select(.name == $name) | .digest),
-              browser_download_url: ($asset_name as $name | .assets[] | select(.name == $name) | .browser_download_url)
-            }' > _site/firmware/metadata.json
+          printf '%s' "$RELEASE_JSON" | jq -c --argfile boards "$BOARD_CATALOG" '
+            . as $release
+            | {
+                tag: $release.tag_name,
+                published_at: $release.published_at,
+                html_url: $release.html_url,
+                assets: (
+                  $boards.boards
+                  | map({
+                      key: .id,
+                      value: (
+                        . as $board
+                        | (
+                            $release.assets[]
+                            | select(.name == $board.full_asset_name)
+                            | {
+                                asset_name: .name,
+                                asset_size: .size,
+                                asset_sha256: .digest,
+                                browser_download_url: .browser_download_url
+                              }
+                          )
+                      )
+                    })
+                  | from_entries
+                )
+              }
+          ' > _site/firmware/metadata.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

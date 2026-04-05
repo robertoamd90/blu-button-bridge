@@ -5,7 +5,6 @@
 #include "esp_err.h"
 
 #define GPIO_ACTION_MAX 16
-#define GPIO_SYSTEM_LED_GPIO 2
 
 typedef enum {
     SYSTEM_LED_OFF = 0,

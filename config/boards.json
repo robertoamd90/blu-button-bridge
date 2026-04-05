@@ -1,0 +1,37 @@
+{
+  "default_board_id": "esp32-devkit-v1",
+  "boards": [
+    {
+      "id": "esp32-devkit-v1",
+      "aliases": ["esp32", "esp32-devkit-v1"],
+      "target": "esp32",
+      "chip": "esp32",
+      "chip_family": "ESP32",
+      "sdkconfig": "configs/sdkconfig.esp32",
+      "build_dir": "build-esp32",
+      "display_name": "ESP32 DevKit V1",
+      "summary": "ESP32 DevKit V1 with ESP-WROOM-32 and 4 MB flash.",
+      "hint": "Primary BluButtonBridge board profile for the original ESP32 build.",
+      "pills": ["ESP32", "4 MB flash", "USB data cable"],
+      "kconfig_symbol": "CONFIG_BBB_BOARD_ESP32_DEVKIT_V1",
+      "ota_asset_name": "BluButtonBridge-esp32-devkit-v1.bin",
+      "full_asset_name": "BluButtonBridge-esp32-devkit-v1-full.bin"
+    },
+    {
+      "id": "esp32c3-supermini",
+      "aliases": ["esp32c3", "esp32c3-supermini"],
+      "target": "esp32c3",
+      "chip": "esp32c3",
+      "chip_family": "ESP32-C3",
+      "sdkconfig": "configs/sdkconfig.esp32c3",
+      "build_dir": "build-esp32c3",
+      "display_name": "ESP32-C3 SuperMini",
+      "summary": "ESP32-C3 SuperMini with 4 MB flash and USB-Serial/JTAG.",
+      "hint": "Use this profile for the common ESP32-C3 SuperMini layout supported by the firmware.",
+      "pills": ["ESP32-C3", "4 MB flash", "USB data cable"],
+      "kconfig_symbol": "CONFIG_BBB_BOARD_ESP32C3_SUPERMINI",
+      "ota_asset_name": "BluButtonBridge-esp32c3-supermini.bin",
+      "full_asset_name": "BluButtonBridge-esp32c3-supermini-full.bin"
+    }
+  ]
+}

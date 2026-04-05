@@ -11,14 +11,11 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "board_config.h"
 #include "gpio_manager.h"
 
 static const char *TAG = "gpio_manager";
 static const char *NVS_NS = "gpio";
-
-static const uint8_t s_allowed_gpios[] = {
-    16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33,
-};
 
 static gpio_action_t      s_actions[GPIO_ACTION_MAX];
 static bool               s_current_on[GPIO_ACTION_MAX];
@@ -49,8 +46,10 @@ static bool action_kind_valid(uint8_t action)
 
 static int allowed_gpio_index(uint8_t gpio_num)
 {
-    for (int i = 0; i < (int)(sizeof(s_allowed_gpios) / sizeof(s_allowed_gpios[0])); i++) {
-        if (s_allowed_gpios[i] == gpio_num) return i;
+    uint8_t allowed_gpios[BOARD_CONFIG_MAX_ACTION_GPIOS];
+    int count = board_config_get_allowed_action_gpios(allowed_gpios, BOARD_CONFIG_MAX_ACTION_GPIOS);
+    for (int i = 0; i < count; i++) {
+        if (allowed_gpios[i] == gpio_num) return i;
     }
     return -1;
 }
@@ -62,11 +61,7 @@ bool gpio_action_gpio_allowed(uint8_t gpio_num)
 
 int gpio_action_get_allowed_gpios(uint8_t *out, int max_count)
 {
-    int n = (int)(sizeof(s_allowed_gpios) / sizeof(s_allowed_gpios[0]));
-    if (!out || max_count <= 0) return n;
-    if (n > max_count) n = max_count;
-    memcpy(out, s_allowed_gpios, n);
-    return n;
+    return board_config_get_allowed_action_gpios(out, max_count);
 }
 
 const char *gpio_action_kind_str(gpio_action_kind_t kind)
@@ -100,6 +95,11 @@ bool gpio_action_kind_parse(const char *str, gpio_action_kind_t *out)
 static int logical_to_level(const gpio_action_t *action, bool on)
 {
     return action->active_low ? !on : on;
+}
+
+static int system_led_level_for(bool on)
+{
+    return board_config_system_led_active_low() ? !on : on;
 }
 
 static void set_output_state_locked(int idx, bool on)
@@ -287,7 +287,7 @@ static void system_led_timer_cb(TimerHandle_t timer)
             return;
     }
 
-    gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, s_system_led_level ? 1 : 0);
+    gpio_set_level((gpio_num_t)board_config_system_led_gpio(), system_led_level_for(s_system_led_level));
     xTimerChangePeriod(timer, next_period, 0);
 }
 
@@ -300,7 +300,7 @@ static void system_led_apply_mode(system_led_mode_t mode)
             xTimerStop(s_system_led_timer, 0);
             s_system_led_level = false;
             s_system_led_phase = 0;
-            gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
+            gpio_set_level((gpio_num_t)board_config_system_led_gpio(), system_led_level_for(false));
             return;
         }
 
@@ -310,7 +310,7 @@ static void system_led_apply_mode(system_led_mode_t mode)
         if (xTimerIsTimerActive(s_system_led_timer) == pdFALSE) {
             s_system_led_level = false;
             s_system_led_phase = 0;
-            gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
+            gpio_set_level((gpio_num_t)board_config_system_led_gpio(), system_led_level_for(false));
             xTimerChangePeriod(s_system_led_timer, pdMS_TO_TICKS(150), 0);
             xTimerStart(s_system_led_timer, 0);
         }
@@ -322,7 +322,7 @@ static void system_led_apply_mode(system_led_mode_t mode)
     s_system_led_mode = mode;
     s_system_led_level = false;
     s_system_led_phase = 0;
-    gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
+    gpio_set_level((gpio_num_t)board_config_system_led_gpio(), system_led_level_for(false));
 
     if (mode != SYSTEM_LED_OFF) {
         xTimerChangePeriod(s_system_led_timer, pdMS_TO_TICKS(150), 0);
@@ -343,7 +343,7 @@ void gpio_manager_init(void)
     create_restore_timers();
 
     gpio_config_t led_cfg = {
-        .pin_bit_mask = 1ULL << GPIO_SYSTEM_LED_GPIO,
+        .pin_bit_mask = 1ULL << board_config_system_led_gpio(),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -351,7 +351,7 @@ void gpio_manager_init(void)
     };
     gpio_config(&led_cfg);
     s_system_led_mode = SYSTEM_LED_OFF;
-    gpio_set_level((gpio_num_t)GPIO_SYSTEM_LED_GPIO, 0);
+    gpio_set_level((gpio_num_t)board_config_system_led_gpio(), system_led_level_for(false));
     s_system_led_level = false;
     s_system_led_timer = xTimerCreateStatic("sys_led",
                                             pdMS_TO_TICKS(300),
@@ -529,24 +529,29 @@ esp_err_t gpio_action_trigger(int idx)
     return ESP_OK;
 }
 
-// ── BOOT button monitor (GPIO 0) ────────────────────────────────────────────
+// ── BOOT button monitor (board-defined GPIO) ───────────────────────────────
 // Hold 3 s → start AP;  hold 10 s → factory reset + reboot.
 // LED feedback: slow blink at 3 s, fast blink at 10 s.
 
-#define BOOT_BTN_GPIO       0
 #define BOOT_POLL_MS        100
 #define BOOT_AP_THRESHOLD_MS    3000
 #define BOOT_RESET_THRESHOLD_MS 10000
+
+static bool boot_button_pressed(void)
+{
+    int level = gpio_get_level((gpio_num_t)board_config_boot_button_gpio());
+    return board_config_boot_button_active_low() ? (level == 0) : (level != 0);
+}
 
 static void boot_button_task(void *arg)
 {
     (void)arg;
 
     gpio_config_t btn_cfg = {
-        .pin_bit_mask = 1ULL << BOOT_BTN_GPIO,
+        .pin_bit_mask = 1ULL << board_config_boot_button_gpio(),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_up_en = board_config_boot_button_active_low() ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+        .pull_down_en = board_config_boot_button_active_low() ? GPIO_PULLDOWN_DISABLE : GPIO_PULLDOWN_ENABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&btn_cfg);
@@ -554,8 +559,7 @@ static void boot_button_task(void *arg)
     bool ap_triggered = false;
 
     while (true) {
-        // Wait for button press (LOW = pressed, has internal pull-up)
-        if (gpio_get_level(BOOT_BTN_GPIO) != 0) {
+        if (!boot_button_pressed()) {
             ap_triggered = false;
             vTaskDelay(pdMS_TO_TICKS(BOOT_POLL_MS));
             continue;
@@ -564,7 +568,7 @@ static void boot_button_task(void *arg)
         uint32_t held_ms = 0;
         system_led_mode_t restore_mode = s_system_led_mode;
         system_led_mode_t feedback_mode = SYSTEM_LED_OFF;
-        while (gpio_get_level(BOOT_BTN_GPIO) == 0) {
+        while (boot_button_pressed()) {
             vTaskDelay(pdMS_TO_TICKS(BOOT_POLL_MS));
             held_ms += BOOT_POLL_MS;
 
