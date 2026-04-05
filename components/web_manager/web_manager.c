@@ -36,7 +36,7 @@ static const char *AUTH_NS = "http_auth";
 #define GITHUB_HTTP_BUFFER_SIZE    8192
 #define GITHUB_HTTP_TX_BUFFER_SIZE 1024
 #define GITHUB_HTTP_MAX_REDIRECTS  5
-static const char *GITHUB_RELEASE_URL = "https://api.github.com/repos/robertoamd90/blu-button-bridge/releases/latest";
+static const char *OTA_MANIFEST_URL = "https://github.com/robertoamd90/blu-button-bridge/releases/latest/download/ota-manifest.json";
 
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
@@ -405,6 +405,7 @@ static esp_err_t github_http_get_json(const char *url, http_buffer_t *buffer)
         .timeout_ms = 15000,
         .buffer_size = GITHUB_HTTP_BUFFER_SIZE,
         .buffer_size_tx = GITHUB_HTTP_TX_BUFFER_SIZE,
+        .max_redirection_count = GITHUB_HTTP_MAX_REDIRECTS,
         .event_handler = http_buffer_event_handler,
         .user_data = buffer,
         .crt_bundle_attach = esp_crt_bundle_attach,
@@ -413,9 +414,8 @@ static esp_err_t github_http_get_json(const char *url, http_buffer_t *buffer)
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return ESP_ERR_NO_MEM;
 
-    esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
+    esp_http_client_set_header(client, "Accept", "application/json");
     esp_http_client_set_header(client, "User-Agent", "BluButtonBridge");
-    esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
 
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
@@ -432,14 +432,15 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
 {
     if (!info) return ESP_ERR_INVALID_ARG;
     memset(info, 0, sizeof(*info));
+    const char *board_id = ota_release_profile_board_id();
     const char *expected_asset_name = ota_release_profile_ota_asset_name();
-    if (!expected_asset_name || expected_asset_name[0] == '\0') {
+    if (!board_id || board_id[0] == '\0' || !expected_asset_name || expected_asset_name[0] == '\0') {
         return ESP_ERR_INVALID_STATE;
     }
 
     http_buffer_t buffer = {0};
 
-    esp_err_t err = github_http_get_json(GITHUB_RELEASE_URL, &buffer);
+    esp_err_t err = github_http_get_json(OTA_MANIFEST_URL, &buffer);
     if (err != ESP_OK) {
         free(buffer.buf);
         return err;
@@ -449,10 +450,10 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
     free(buffer.buf);
     if (!root) return ESP_FAIL;
 
-    cJSON *tag = cJSON_GetObjectItem(root, "tag_name");
+    cJSON *tag = cJSON_GetObjectItem(root, "tag");
     cJSON *html_url = cJSON_GetObjectItem(root, "html_url");
-    cJSON *assets = cJSON_GetObjectItem(root, "assets");
-    if (!cJSON_IsString(tag) || !cJSON_IsArray(assets)) {
+    cJSON *boards = cJSON_GetObjectItem(root, "boards");
+    if (!cJSON_IsString(tag) || !cJSON_IsObject(boards)) {
         cJSON_Delete(root);
         return ESP_FAIL;
     }
@@ -461,27 +462,29 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
     format_version_label(tag->valuestring, info->version_label, sizeof(info->version_label));
     if (cJSON_IsString(html_url)) strlcpy(info->html_url, html_url->valuestring, sizeof(info->html_url));
 
-    bool found_asset = false;
-    cJSON *asset = NULL;
-    cJSON_ArrayForEach(asset, assets) {
-        cJSON *name = cJSON_GetObjectItem(asset, "name");
-        if (!cJSON_IsString(name) || strcmp(name->valuestring, expected_asset_name) != 0) continue;
-
-        cJSON *download_url = cJSON_GetObjectItem(asset, "browser_download_url");
-        cJSON *digest = cJSON_GetObjectItem(asset, "digest");
-        cJSON *size = cJSON_GetObjectItem(asset, "size");
-        if (!cJSON_IsString(download_url) || !cJSON_IsString(digest) || !cJSON_IsNumber(size)) break;
-        if (!parse_github_digest(digest->valuestring, info->digest_hex, sizeof(info->digest_hex))) break;
-
-        strlcpy(info->asset_name, name->valuestring, sizeof(info->asset_name));
-        strlcpy(info->download_url, download_url->valuestring, sizeof(info->download_url));
-        info->asset_size = (int)size->valuedouble;
-        found_asset = true;
-        break;
+    cJSON *board = cJSON_GetObjectItemCaseSensitive(boards, board_id);
+    if (!cJSON_IsObject(board)) {
+        cJSON_Delete(root);
+        return ESP_ERR_NOT_FOUND;
     }
 
+    cJSON *name = cJSON_GetObjectItem(board, "asset_name");
+    cJSON *download_url = cJSON_GetObjectItem(board, "browser_download_url");
+    cJSON *digest = cJSON_GetObjectItem(board, "asset_sha256");
+    cJSON *size = cJSON_GetObjectItem(board, "asset_size");
+    if (!cJSON_IsString(name) || strcmp(name->valuestring, expected_asset_name) != 0 ||
+        !cJSON_IsString(download_url) || !cJSON_IsString(digest) || !cJSON_IsNumber(size) ||
+        !parse_github_digest(digest->valuestring, info->digest_hex, sizeof(info->digest_hex))) {
+        cJSON_Delete(root);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    strlcpy(info->asset_name, name->valuestring, sizeof(info->asset_name));
+    strlcpy(info->download_url, download_url->valuestring, sizeof(info->download_url));
+    info->asset_size = (int)size->valuedouble;
+
     cJSON_Delete(root);
-    return found_asset ? ESP_OK : ESP_ERR_NOT_FOUND;
+    return ESP_OK;
 }
 // ── Async background tasks (WiFi/MQTT connect without blocking the HTTP path) ─
 

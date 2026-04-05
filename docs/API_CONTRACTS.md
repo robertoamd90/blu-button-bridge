@@ -121,6 +121,8 @@ Important behavior:
 
 - this call also caches the latest checked release in RAM inside `web_manager`
 - `POST /api/system/update` depends on that cached result
+- the latest release metadata now comes from a lightweight `ota-manifest.json` asset attached to the latest GitHub release
+- the staged OTA download still installs the board-specific `.bin` asset from that same GitHub release
 
 ### `POST /api/system/update`
 
