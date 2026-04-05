@@ -66,6 +66,22 @@ Look for:
 - telemetry exposure
 - event mask semantics
 
+## Auth or HTTP Basic Auth behavior
+
+Start with:
+
+- `components/web_manager/web_manager.c`
+- `site/index.html`
+- `docs/API_CONTRACTS.md`
+- `README.md`
+
+Look for:
+
+- whether auth is optional or enforced
+- which routes and assets are protected
+- browser-native auth expectations
+- configuration request/response shape
+
 ## GPIO actions or system LED behavior
 
 Start with:
@@ -154,12 +170,16 @@ Look for:
 Start with:
 
 - `CMakeLists.txt`
+- `config/boards.json`
 - `docs/WORKFLOW.md`
 - `README.md`
+- `scripts/package-release.sh`
 
 Look for:
 
 - `git describe --tags --always --dirty`
+- board-specific asset naming and aliases
+- packaging entry points and output names
 - tag-before-build rule
 - artifact naming and checksum reporting
 
@@ -169,6 +189,7 @@ Start with:
 
 - `site/index.html`
 - `site/app.js`
+- `config/boards.json`
 - `site/styles.css`
 - `.github/workflows/pages.yml`
 - `docs/PAGES_INSTALLER_CONTRACT.md`
@@ -176,7 +197,41 @@ Start with:
 
 Look for:
 
+- the board catalog as the single source of truth
 - latest release asset expectations
 - mirrored Pages payload structure
 - installer URL and documentation links
 - browser-facing install flow
+
+## Documentation or agent-guidance edits
+
+Start with:
+
+- `AGENTS.md`
+- `docs/WORKFLOW.md`
+- `docs/VALIDATION.md`
+- `docs/WHERE_TO_START.md`
+- `README.md`
+
+Look for:
+
+- source-of-truth hierarchy
+- onboarding flow for new agents
+- whether task entry points still match the codebase
+- whether review and validation guidance drifted from actual practice
+
+## Running review agents
+
+Start with:
+
+- `docs/WORKFLOW.md`
+- `AGENTS.md`
+
+Look for:
+
+- required review roles
+- structured output contract
+- exact review scope to pass
+- prompt wording that keeps each agent in its own role
+- the rule to close old review agents and spawn fresh ones for every review round
+- when to add the `librarian` documentation-clarity review

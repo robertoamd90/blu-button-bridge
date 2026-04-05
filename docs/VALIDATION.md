@@ -6,9 +6,14 @@ This document defines what evidence is expected before claiming work is done.
 
 For non-trivial work, the normal validation path is:
 
-1. run `idf.py -p /dev/cu.usbserial-0001 build flash`
+1. run a target-aware build+flash for the active board profile
 2. let the user run on-device validation
 3. only then move to commit / PR / merge
+
+Examples:
+
+- `source ~/esp/esp-idf/export.sh && scripts/idf-target.sh esp32-devkit-v1 flash`
+- `source ~/esp/esp-idf/export.sh && ESPPORT=/dev/cu.usbmodem3101 scripts/idf-target.sh esp32c3-supermini flash`
 
 This is the preferred path because it validates both:
 
@@ -19,7 +24,7 @@ This is the preferred path because it validates both:
 
 Minimum expected evidence:
 
-- `build flash` succeeds
+- the target-aware build+flash command succeeds
 - the user can test the changed behavior on the board
 
 When the change touches a specific area, validate at least:
@@ -64,7 +69,7 @@ When the change touches a specific area, validate at least:
 
 Fallback evidence:
 
-1. run `idf.py build`
+1. run a target-aware build for the active board profile
 2. verify the critical code path by inspection
 3. state explicitly that hardware validation is still missing
 
@@ -80,7 +85,7 @@ Say instead:
 If the board exists but `/dev/cu.usbserial-0001` is busy or unavailable:
 
 1. say that flashing could not be completed
-2. still run `idf.py build`
+2. still run a target-aware build for the active board profile
 3. report the blocked validation clearly
 
 Do not silently downgrade this to “done”.

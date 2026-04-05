@@ -21,6 +21,7 @@ This contract is specifically about:
 ## Transport model
 
 - `/console` serves the HTML console page
+- `/console` is an authenticated page when HTTP Basic Auth is enabled
 - `/api/console/stream` is an authenticated `GET` endpoint
 - the stream uses `text/event-stream`
 - stream work runs in a dedicated task created by `web_manager`
