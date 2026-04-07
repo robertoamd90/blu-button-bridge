@@ -133,8 +133,8 @@ If you only plan to build the original ESP32 target, `./install.sh esp32` is sti
 
 The repository now keeps separate build profiles for the two supported compile targets:
 
-- `configs/sdkconfig.esp32` -> `build-esp32/`
-- `configs/sdkconfig.esp32c3` -> `build-esp32c3/`
+- `configs/sdkconfig.esp32` -> `build/esp32-devkit-v1/`
+- `configs/sdkconfig.esp32c3` -> `build/esp32c3-supermini/`
 
 Each profile also selects a board definition through Kconfig:
 

@@ -1,6 +1,5 @@
 # ESP-IDF build output
 build/
-build-*/
 dist/
 
 # Downloaded components (like node_modules)
