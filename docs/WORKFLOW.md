@@ -221,10 +221,17 @@ Treat work as non-trivial if it affects any of these:
 
 Use repository-style branch names when possible:
 
-- `feat/...`
-- `fix/...`
-- `refactor/...`
-- `hardening/...`
+- `feat/<short-slug>` for feature work
+- `fix/<short-slug>` for bug fixes
+- `refactor/<short-slug>` for refactors
+- `hardening/<short-slug>` for stabilization / recovery work
+
+Prefer short readable slugs. When a branch is tied to a GitHub issue, including the issue number in the slug is encouraged, for example:
+
+- `feat/issue-22-multi-button-ble`
+- `fix/wifi-reconnect-backoff`
+
+Prefer the repository's abbreviated prefixes such as `feat/` over longer variants such as `feature/`.
 
 Temporary Codex-generated branch names are acceptable, but stable work should converge to readable repo-style names when practical.
 
