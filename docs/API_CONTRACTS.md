@@ -495,24 +495,55 @@ Array items include:
   - `mac`
   - `label`
   - `enabled`
+  - `button_count`
 - health:
   - `key_import_error`
   - `decrypt_error`
-- MQTT masks:
-  - `single_press`
-  - `double_press`
-  - `triple_press`
-  - `long_press`
-- GPIO masks:
-  - `gpio_single_press`
-  - `gpio_double_press`
-  - `gpio_triple_press`
-  - `gpio_long_press`
-- runtime telemetry:
+- device runtime telemetry:
   - `battery_percent`
-  - `last_button_event`
   - `last_seen_age_s`
-  - `last_button_event_age_s`
+- nested button telemetry + mappings:
+  - `buttons[]`
+  - each button item includes:
+    - `idx`
+    - `last_event`
+    - `last_event_age_s`
+    - `mqtt`
+    - `gpio`
+
+Representative shape:
+
+```json
+{
+  "mac": "AA:BB:CC:DD:EE:FF",
+  "label": "Wall switch",
+  "enabled": true,
+  "button_count": 4,
+  "battery_percent": 88,
+  "last_seen_age_s": 12,
+  "key_import_error": false,
+  "decrypt_error": false,
+  "buttons": [
+    {
+      "idx": 0,
+      "last_event": "double_press",
+      "last_event_age_s": 30,
+      "mqtt": {
+        "single_press": 1,
+        "double_press": 0,
+        "triple_press": 0,
+        "long_press": 2
+      },
+      "gpio": {
+        "single_press": 0,
+        "double_press": 4,
+        "triple_press": 0,
+        "long_press": 0
+      }
+    }
+  ]
+}
+```
 
 ### `POST /api/ble/register/confirm`
 
@@ -531,6 +562,9 @@ Rules:
 - `mac` and `key` are required
 - `key` must be exactly 32 hex chars
 - label defaults to `Device` if omitted
+- registration confirmation validates the provided key against the captured encrypted packet before saving
+- registration derives `button_count` from that same packet
+- if decryption fails, the device is not saved
 
 ### `PATCH /api/ble/device`
 
@@ -541,14 +575,23 @@ Partial update shape:
   "mac": "AA:BB:CC:DD:EE:FF",
   "label": "Gate remote",
   "enabled": true,
-  "single_press": 1,
-  "double_press": 0,
-  "triple_press": 0,
-  "long_press": 2,
-  "gpio_single_press": 1,
-  "gpio_double_press": 0,
-  "gpio_triple_press": 0,
-  "gpio_long_press": 0,
+  "buttons": [
+    {
+      "idx": 0,
+      "mqtt": {
+        "single_press": 1,
+        "double_press": 0,
+        "triple_press": 0,
+        "long_press": 2
+      },
+      "gpio": {
+        "single_press": 1,
+        "double_press": 0,
+        "triple_press": 0,
+        "long_press": 0
+      }
+    }
+  ],
   "key": "00112233445566778899AABBCCDDEEFF"
 }
 ```
@@ -556,7 +599,8 @@ Partial update shape:
 Rules:
 
 - `mac` is required
-- event fields are bitmasks referencing action slots
+- `buttons` replaces the per-button mapping set when present
+- each mapping field is a bitmask referencing action slots
 - optional `key` replaces the stored key only when present and non-empty
 
 ### `POST /api/ble/device/reimport`
@@ -595,7 +639,7 @@ When no device is pending, `pending_mac` is `null`.
 Current exported schema version:
 
 ```json
-{"version":2}
+{"version":3}
 ```
 
 Top-level sections:
@@ -613,6 +657,7 @@ Notable details:
 
 - `auth.password_sha256` is exported, not the cleartext password
 - BLE runtime telemetry is **not** exported
+- BLE device mappings now use the nested `button_count` + `buttons[]` schema
 - OTA staged job state is **not** part of backup/restore
 
 ### `POST /api/system/config`
@@ -625,6 +670,10 @@ Restore rules:
 - auth restore is stricter than many other sections:
   - invalid username or invalid password hash rejects restore
   - enabling auth without username or password hash rejects restore
+- BLE restore is strict about schema:
+  - when `ble_devices` is present, backup `version` must be `3` or newer
+  - each BLE device entry must provide `button_count` and `buttons`
+  - the old flat BLE event fields are rejected
 - successful restore triggers reboot
 
 ## 8. Compatibility rule

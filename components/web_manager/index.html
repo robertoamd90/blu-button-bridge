@@ -318,10 +318,8 @@
       <input type="checkbox" id="ble-edit-enabled">
       <label for="ble-edit-enabled">Enabled</label>
     </div>
-    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:var(--text-soft);margin-bottom:.4rem">MQTT Actions</div>
-    <div id="ble-edit-mqtt-events"></div>
-    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:var(--text-soft);margin:.2rem 0 .4rem">GPIO Actions</div>
-    <div id="ble-edit-gpio-events"></div>
+    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;color:var(--text-soft);margin-bottom:.4rem">Buttons</div>
+    <div id="ble-edit-buttons"></div>
     <div id="ble-edit-import-warn" style="color:var(--warning-text);background:var(--warning-bg);border:1px solid var(--warning-border);border-radius:6px;padding:.65rem .75rem;margin-bottom:.75rem;display:none">
       Local key import error. The ESP controller could not load this key into its crypto engine.
       Try re-importing the stored key first; if it persists, reboot the controller or replace the key.
@@ -344,6 +342,7 @@
     <h2>Add Device</h2>
     <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:.75rem">
       Start scanning, then press the button on your Shelly Blu device to capture its MAC address.
+      Registration validates the key against that packet and discovers how many buttons the device exposes.
     </p>
     <div id="ble-reg-idle">
       <button class="btn btn-primary" onclick="bleRegStart()">Start Scanning</button>
@@ -1273,6 +1272,7 @@
   // ── BLE ───────────────────────────────────────────────────────────────────
 
   let _bleEditMac  = null;
+  let _bleDevices  = [];
   let _bleRegTimer = null;
   const BLE_EVENTS = ['single_press','double_press','triple_press','long_press'];
   const BLE_LABELS = ['Single press','Double press','Triple press','Long press'];
@@ -1303,33 +1303,107 @@
     return mask;
   }
 
+  function bleGetDevice(mac) {
+    return _bleDevices.find(d => d.mac === mac) || null;
+  }
+
+  function bleActionCount(actionMap) {
+    if (!actionMap) return 0;
+    return BLE_EVENTS.reduce((count, ev) => {
+      let mask = Number(actionMap[ev] || 0);
+      let bits = 0;
+      while (mask) {
+        bits += mask & 1;
+        mask >>= 1;
+      }
+      return count + bits;
+    }, 0);
+  }
+
+  function bleButtonSummaryLine(button) {
+    if (!button || button.last_event === null || button.last_event === undefined) {
+      return 'Button ' + ((button ? button.idx : 0) + 1) + ' · no events yet';
+    }
+    return 'Button ' + (button.idx + 1) + ' · ' + formatBleEvent(button.last_event) + ' · ' + formatAge(button.last_event_age_s);
+  }
+
+  function bleButtonEditorSummary(button) {
+    return [
+      'MQTT ' + bleActionCount(button && button.mqtt),
+      'GPIO ' + bleActionCount(button && button.gpio),
+    ].join(' · ');
+  }
+
+  function buttonActionSectionHtml(title, buttonIdx, actionMap, actions, prefix, emptyText) {
+    if (!actions.length) {
+      return `<div style="margin-bottom:.75rem">
+        <div class="event-label">${title}</div>
+        <small style="color:var(--text-soft)">${emptyText}</small>
+      </div>`;
+    }
+    return `<div style="margin-bottom:.75rem">
+      <div class="event-label">${title}</div>
+      ${BLE_EVENTS.map((ev, i) =>
+        eventBlockHtml(ev, BLE_LABELS[i], (actionMap && actionMap[ev]) || 0,
+          actions, prefix + '-' + buttonIdx, emptyText)).join('')}
+    </div>`;
+  }
+
+  function bleButtonSummaryHtml(button) {
+    return `<li style="font-size:.76rem;color:var(--text-muted);margin:.18rem 0">
+      ${escHtml(bleButtonSummaryLine(button))}
+    </li>`;
+  }
+
+  function bleButtonEditorHtml(button) {
+    const mqtt = button && button.mqtt ? button.mqtt : {};
+    const gpio = button && button.gpio ? button.gpio : {};
+    return `<details class="event-block" style="padding:.75rem .85rem;margin-bottom:.75rem;background:var(--surface-muted)" ${button.idx === 0 ? 'open' : ''}>
+      <summary style="cursor:pointer;list-style:none">
+        <div style="font-size:.84rem;font-weight:600;color:var(--text);display:inline-block">Button ${button.idx + 1} · <span style="color:var(--text-muted);font-weight:500">${escHtml(bleButtonEditorSummary(button))}</span></div>
+      </summary>
+      <div style="margin-top:.75rem">
+      ${buttonActionSectionHtml('MQTT Actions', button.idx, mqtt, _mqttActions, 'mqtt-btn',
+        'No MQTT actions defined — add them in the MQTT tab first')}
+      ${buttonActionSectionHtml('GPIO Actions', button.idx, gpio, _gpioActions, 'gpio-btn',
+        'No GPIO actions defined — add them in the GPIO tab first')}
+      </div>
+    </details>`;
+  }
+
   function renderBleDevices(devs) {
     const el = document.getElementById('ble-device-list');
     if (!devs.length) { el.innerHTML = '<small style="color:var(--text-soft)">No devices registered</small>'; return; }
     el.innerHTML = devs.map(d => `
       <div style="display:flex;align-items:center;justify-content:space-between;padding:.5rem 0;border-bottom:1px solid var(--border)">
         <div>
-          <div style="font-weight:600;font-size:.9rem">
-            ${escHtml(d.label)}
-            ${d.key_import_error ? ' <span style="color:var(--warning-text);font-size:.75rem;font-weight:600">&#9888; Import Error</span>' : ''}
-            ${d.decrypt_error ? ' <span style="color:var(--error-text-soft);font-size:.75rem;font-weight:600">&#9888; Decrypt Error</span>' : ''}
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.4rem .5rem">
+            <div style="font-weight:600;font-size:.9rem;min-width:0;overflow-wrap:anywhere">${escHtml(d.label)}</div>
+            <span style="display:inline-flex;align-items:center;font-size:.72rem;font-weight:600;padding:.16rem .5rem;border-radius:999px;border:1px solid var(--border);background:var(--surface-muted);color:${d.enabled ? 'var(--primary)' : 'var(--text-soft)'}">
+              ${d.enabled ? 'Enabled' : 'Disabled'}
+            </span>
           </div>
           <div style="font-size:.76rem;color:var(--text-soft);font-family:monospace">${d.mac}</div>
+          ${(d.key_import_error || d.decrypt_error) ? `<div style="margin-top:.2rem;display:flex;flex-wrap:wrap;gap:.35rem">
+            ${d.key_import_error ? '<span style="color:var(--warning-text);font-size:.72rem;font-weight:600">&#9888; Import Error</span>' : ''}
+            ${d.decrypt_error ? '<span style="color:var(--error-text-soft);font-size:.72rem;font-weight:600">&#9888; Decrypt Error</span>' : ''}
+          </div>` : ''}
           <div style="font-size:.76rem;color:var(--text-muted);margin-top:.2rem">
             ${d.battery_percent === null ? 'Battery: --' : ('Battery: ' + d.battery_percent + '%')}
           </div>
           <div style="font-size:.76rem;color:var(--text-muted);margin-top:.15rem">
             ${d.last_seen_age_s === null ? 'Last seen: waiting for traffic' : ('Last seen: ' + formatAge(d.last_seen_age_s))}
           </div>
-          <div style="font-size:.76rem;color:var(--text-muted);margin-top:.15rem">
-            ${d.last_button_event === null
-              ? 'Last event: none yet'
-              : ('Last event: ' + formatBleEvent(d.last_button_event) + ' (' + formatAge(d.last_button_event_age_s) + ')')}
+          <div style="margin-top:.5rem">
+            <div style="font-size:.74rem;font-weight:700;text-transform:uppercase;color:var(--text-soft)">Buttons</div>
+            ${Array.isArray(d.buttons) && d.buttons.length
+              ? `<ul style="margin:.28rem 0 0;padding-left:1rem">${d.buttons.map(bleButtonSummaryHtml).join('')}</ul>`
+              : '<small style="color:var(--text-soft)">No button telemetry yet</small>'}
           </div>
         </div>
         <div class="row" style="margin:0;gap:.35rem">
           <button class="btn btn-secondary" style="padding:.3rem .7rem;font-size:.8rem"
-            onclick='bleEdit(${JSON.stringify(d)})'>Edit</button>
+            onclick="bleEditByMac('${d.mac}')">Edit</button>
           <button class="btn btn-danger" style="padding:.3rem .7rem;font-size:.8rem"
             onclick="bleDelete('${d.mac}')">Delete</button>
         </div>
@@ -1339,23 +1413,30 @@
   async function loadBleDevices() {
     try {
       const devs = await (await fetch('/api/ble/devices')).json();
+      _bleDevices = Array.isArray(devs) ? devs : [];
       renderBleDevices(devs);
-      return devs;
+      return _bleDevices;
     } catch(e) {}
+    _bleDevices = [];
     return [];
+  }
+
+  function bleEditByMac(mac) {
+    const d = bleGetDevice(mac);
+    if (d) bleEdit(d);
   }
 
   async function bleEdit(d) {
     _bleEditMac = d.mac;
     await loadMqttActions();
     await loadGpioActions();
-    document.getElementById('ble-edit-mac-label').textContent = 'MAC: ' + d.mac;
+    document.getElementById('ble-edit-mac-label').textContent = 'MAC: ' + d.mac + ' · Buttons: ' + d.button_count;
     document.getElementById('ble-edit-label').value   = d.label;
     document.getElementById('ble-edit-enabled').checked = d.enabled;
-    document.getElementById('ble-edit-mqtt-events').innerHTML =
-      BLE_EVENTS.map((ev, i) => eventBlockHtml(ev, BLE_LABELS[i], d[ev] || 0, _mqttActions, 'mqtt-ev', 'No MQTT actions defined — add them in the MQTT tab first')).join('');
-    document.getElementById('ble-edit-gpio-events').innerHTML =
-      BLE_EVENTS.map((ev, i) => eventBlockHtml(ev, BLE_LABELS[i], d['gpio_' + ev] || 0, _gpioActions, 'gpio-ev', 'No GPIO actions defined — add them in the GPIO tab first')).join('');
+    document.getElementById('ble-edit-buttons').innerHTML =
+      Array.isArray(d.buttons) && d.buttons.length
+        ? d.buttons.map(bleButtonEditorHtml).join('')
+        : '<small style="color:var(--text-soft)">No button slots discovered for this device.</small>';
     document.getElementById('ble-edit-key').value = '';
     document.getElementById('ble-edit-import-warn').style.display = d.key_import_error ? 'block' : 'none';
     document.getElementById('ble-edit-decrypt-warn').style.display = d.decrypt_error ? 'block' : 'none';
@@ -1373,18 +1454,27 @@
 
   async function bleSave() {
     if (!_bleEditMac) return;
+    const device = bleGetDevice(_bleEditMac);
+    if (!device) return toast('toast-ble-edit', false, 'Device state is stale — reload the page');
     const body = {
-      mac:          _bleEditMac,
-      label:        document.getElementById('ble-edit-label').value.trim(),
-      enabled:      document.getElementById('ble-edit-enabled').checked,
-      single_press: getEventMask('single_press', _mqttActions, 'mqtt-ev'),
-      double_press: getEventMask('double_press', _mqttActions, 'mqtt-ev'),
-      triple_press: getEventMask('triple_press', _mqttActions, 'mqtt-ev'),
-      long_press:   getEventMask('long_press', _mqttActions, 'mqtt-ev'),
-      gpio_single_press: getEventMask('single_press', _gpioActions, 'gpio-ev'),
-      gpio_double_press: getEventMask('double_press', _gpioActions, 'gpio-ev'),
-      gpio_triple_press: getEventMask('triple_press', _gpioActions, 'gpio-ev'),
-      gpio_long_press:   getEventMask('long_press', _gpioActions, 'gpio-ev'),
+      mac:     _bleEditMac,
+      label:   document.getElementById('ble-edit-label').value.trim(),
+      enabled: document.getElementById('ble-edit-enabled').checked,
+      buttons: (device.buttons || []).map(button => ({
+        idx: button.idx,
+        mqtt: {
+          single_press: getEventMask('single_press', _mqttActions, 'mqtt-btn-' + button.idx),
+          double_press: getEventMask('double_press', _mqttActions, 'mqtt-btn-' + button.idx),
+          triple_press: getEventMask('triple_press', _mqttActions, 'mqtt-btn-' + button.idx),
+          long_press:   getEventMask('long_press', _mqttActions, 'mqtt-btn-' + button.idx),
+        },
+        gpio: {
+          single_press: getEventMask('single_press', _gpioActions, 'gpio-btn-' + button.idx),
+          double_press: getEventMask('double_press', _gpioActions, 'gpio-btn-' + button.idx),
+          triple_press: getEventMask('triple_press', _gpioActions, 'gpio-btn-' + button.idx),
+          long_press:   getEventMask('long_press', _gpioActions, 'gpio-btn-' + button.idx),
+        }
+      })),
     };
     const key = document.getElementById('ble-edit-key').value.trim();
     if (key && !/^[0-9a-fA-F]{32}$/.test(key)) {
@@ -1393,8 +1483,15 @@
     if (key) body.key = key;
     try {
       const d = await api('/api/ble/device', 'PATCH', body);
-      if (d.ok) { toast('toast-ble-edit', true, 'Saved!'); loadBleDevices(); }
-      else toast('toast-ble-edit', false, d.error || 'Failed');
+      if (d.ok) {
+        toast('toast-ble-edit', true, 'Saved!');
+        const devs = await loadBleDevices();
+        const updated = devs.find(x => x.mac === _bleEditMac);
+        if (updated) await bleEdit(updated);
+        else bleEditClose();
+      } else {
+        toast('toast-ble-edit', false, d.error || 'Failed');
+      }
     } catch(e) { toast('toast-ble-edit', false, 'Request failed'); }
   }
 
@@ -1444,7 +1541,7 @@
         document.getElementById('ble-reg-label').value = '';
         document.getElementById('ble-reg-form').style.display = 'block';
         document.getElementById('ble-reg-wait').style.display = 'none';
-        document.getElementById('ble-reg-msg').textContent = 'Device detected! Enter key and label.';
+        document.getElementById('ble-reg-msg').textContent = 'Device detected! Enter key and label. The key and button count will be validated before saving.';
         clearInterval(_bleRegTimer);
         _bleRegTimer = null;
       } else if (!d.registering) {

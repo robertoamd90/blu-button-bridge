@@ -5,6 +5,7 @@
 #include "esp_err.h"
 
 #define BLE_ACCESS_MAX_DEVICES 8
+#define BLE_ACCESS_MAX_BUTTONS 6
 
 #define BLE_STATUS_LIST \
     X(STARTING, "starting") \
@@ -32,32 +33,41 @@ const char   *ble_status_str(ble_status_t s);
 ble_status_t  ble_get_status(void);
 const char   *ble_button_event_str(uint8_t event);
 
-// Registered BTHome v2 device.
-// Per-event fields are bitmasks: bit N set means trigger the action at slot N.
+typedef struct {
+    uint16_t single_press;      // bitmask of action slots to trigger
+    uint16_t double_press;
+    uint16_t triple_press;
+    uint16_t long_press;
+} ble_button_action_map_t;
+
+typedef struct {
+    ble_button_action_map_t mqtt;
+    ble_button_action_map_t gpio;
+} ble_button_config_t;
+
+// Registered BTHome v2 device with up to BLE_ACCESS_MAX_BUTTONS child buttons.
 typedef struct {
     uint8_t  mac[6];           // BLE address, little-endian (NimBLE format)
     uint8_t  key[16];          // AES-128 decryption key
     uint32_t last_counter;     // Anti-replay: last accepted counter value
     char     label[32];
     bool     enabled;
-    uint16_t single_press;     // bitmask of MQTT action slots to trigger
-    uint16_t double_press;
-    uint16_t triple_press;
-    uint16_t long_press;
-    uint16_t gpio_single_press; // bitmask of GPIO action slots to trigger
-    uint16_t gpio_double_press;
-    uint16_t gpio_triple_press;
-    uint16_t gpio_long_press;
+    uint8_t  button_count;
+    ble_button_config_t buttons[BLE_ACCESS_MAX_BUTTONS];
 } ble_device_t;
+
+typedef struct {
+    bool     has_last_event;
+    uint8_t  last_event;
+    uint32_t last_event_age_s;
+} ble_button_telemetry_t;
 
 typedef struct {
     bool     has_last_seen;
     uint32_t last_seen_age_s;
-    bool     has_last_button_event;
-    uint8_t  last_button_event;
-    uint32_t last_button_event_age_s;
     bool     has_battery_percent;
     uint8_t  battery_percent;
+    ble_button_telemetry_t buttons[BLE_ACCESS_MAX_BUTTONS];
 } ble_device_telemetry_t;
 
 // Initialises NimBLE and starts passive scanning. Call once from app_main.

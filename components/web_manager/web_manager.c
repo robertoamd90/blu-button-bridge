@@ -1340,6 +1340,83 @@ static esp_err_t handle_gpio_action_delete(httpd_req_t *req)
     return ESP_OK;
 }
 
+static void ble_json_add_action_map(cJSON *parent, const ble_button_action_map_t *map)
+{
+    if (!parent || !map) return;
+    cJSON_AddNumberToObject(parent, "single_press", map->single_press);
+    cJSON_AddNumberToObject(parent, "double_press", map->double_press);
+    cJSON_AddNumberToObject(parent, "triple_press", map->triple_press);
+    cJSON_AddNumberToObject(parent, "long_press", map->long_press);
+}
+
+static void ble_fill_action_map_from_json(cJSON *obj, ble_button_action_map_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!obj || !cJSON_IsObject(obj)) return;
+
+    cJSON *sp = cJSON_GetObjectItem(obj, "single_press");
+    cJSON *dp = cJSON_GetObjectItem(obj, "double_press");
+    cJSON *tp = cJSON_GetObjectItem(obj, "triple_press");
+    cJSON *lp = cJSON_GetObjectItem(obj, "long_press");
+    out->single_press = cJSON_IsNumber(sp) ? (uint16_t)sp->valuedouble : 0;
+    out->double_press = cJSON_IsNumber(dp) ? (uint16_t)dp->valuedouble : 0;
+    out->triple_press = cJSON_IsNumber(tp) ? (uint16_t)tp->valuedouble : 0;
+    out->long_press   = cJSON_IsNumber(lp) ? (uint16_t)lp->valuedouble : 0;
+}
+
+static bool ble_parse_button_configs(cJSON *buttons_item,
+                                     uint8_t button_count,
+                                     ble_button_config_t out_buttons[BLE_ACCESS_MAX_BUTTONS],
+                                     const char **out_error)
+{
+    if (out_error) *out_error = "invalid button config";
+    if (!cJSON_IsArray(buttons_item)) {
+        if (out_error) *out_error = "buttons array required";
+        return false;
+    }
+
+    memset(out_buttons, 0, sizeof(ble_button_config_t) * BLE_ACCESS_MAX_BUTTONS);
+    uint8_t seen_mask = 0;
+    cJSON *item;
+    cJSON_ArrayForEach(item, buttons_item) {
+        cJSON *idx_item = cJSON_GetObjectItem(item, "idx");
+        if (!cJSON_IsNumber(idx_item)) {
+            if (out_error) *out_error = "button idx required";
+            return false;
+        }
+
+        int idx = (int)idx_item->valuedouble;
+        if (idx < 0 || idx >= button_count || idx >= BLE_ACCESS_MAX_BUTTONS) {
+            if (out_error) *out_error = "button idx out of range";
+            return false;
+        }
+
+        uint8_t bit = (uint8_t)(1u << idx);
+        if (seen_mask & bit) {
+            if (out_error) *out_error = "duplicate button idx";
+            return false;
+        }
+        seen_mask |= bit;
+
+        cJSON *mqtt_item = cJSON_GetObjectItem(item, "mqtt");
+        cJSON *gpio_item = cJSON_GetObjectItem(item, "gpio");
+        if (mqtt_item && !cJSON_IsObject(mqtt_item)) {
+            if (out_error) *out_error = "button mqtt config must be an object";
+            return false;
+        }
+        if (gpio_item && !cJSON_IsObject(gpio_item)) {
+            if (out_error) *out_error = "button gpio config must be an object";
+            return false;
+        }
+
+        ble_fill_action_map_from_json(mqtt_item, &out_buttons[idx].mqtt);
+        ble_fill_action_map_from_json(gpio_item, &out_buttons[idx].gpio);
+    }
+
+    return true;
+}
+
 // GET /api/ble/devices
 static esp_err_t handle_ble_devices(httpd_req_t *req)
 {
@@ -1356,34 +1433,41 @@ static esp_err_t handle_ble_devices(httpd_req_t *req)
         cJSON_AddStringToObject(obj, "mac",              mac_str);
         cJSON_AddStringToObject(obj, "label",            d->label);
         cJSON_AddBoolToObject  (obj, "enabled",          d->enabled);
+        cJSON_AddNumberToObject(obj, "button_count",     d->button_count);
         cJSON_AddBoolToObject  (obj, "key_import_error", ble_access_has_key_import_error(d->mac));
         cJSON_AddBoolToObject  (obj, "decrypt_error",    ble_access_has_decrypt_error(d->mac));
-        cJSON_AddNumberToObject(obj, "single_press",     d->single_press);
-        cJSON_AddNumberToObject(obj, "double_press",     d->double_press);
-        cJSON_AddNumberToObject(obj, "triple_press",     d->triple_press);
-        cJSON_AddNumberToObject(obj, "long_press",       d->long_press);
-        cJSON_AddNumberToObject(obj, "gpio_single_press", d->gpio_single_press);
-        cJSON_AddNumberToObject(obj, "gpio_double_press", d->gpio_double_press);
-        cJSON_AddNumberToObject(obj, "gpio_triple_press", d->gpio_triple_press);
-        cJSON_AddNumberToObject(obj, "gpio_long_press",   d->gpio_long_press);
         if (telemetry.has_battery_percent)
             cJSON_AddNumberToObject(obj, "battery_percent", telemetry.battery_percent);
         else
             cJSON_AddNullToObject(obj, "battery_percent");
-        if (telemetry.has_last_button_event)
-            cJSON_AddStringToObject(obj, "last_button_event",
-                                    ble_button_event_str(telemetry.last_button_event));
-        else
-            cJSON_AddNullToObject(obj, "last_button_event");
         if (telemetry.has_last_seen)
             cJSON_AddNumberToObject(obj, "last_seen_age_s", telemetry.last_seen_age_s);
         else
             cJSON_AddNullToObject(obj, "last_seen_age_s");
-        if (telemetry.has_last_button_event)
-            cJSON_AddNumberToObject(obj, "last_button_event_age_s",
-                                    telemetry.last_button_event_age_s);
-        else
-            cJSON_AddNullToObject(obj, "last_button_event_age_s");
+
+        cJSON *buttons = cJSON_AddArrayToObject(obj, "buttons");
+        for (uint8_t button_idx = 0;
+             button_idx < d->button_count && button_idx < BLE_ACCESS_MAX_BUTTONS;
+             button_idx++) {
+            cJSON *button = cJSON_CreateObject();
+            cJSON_AddNumberToObject(button, "idx", button_idx);
+            if (telemetry.buttons[button_idx].has_last_event)
+                cJSON_AddStringToObject(button, "last_event",
+                                        ble_button_event_str(telemetry.buttons[button_idx].last_event));
+            else
+                cJSON_AddNullToObject(button, "last_event");
+            if (telemetry.buttons[button_idx].has_last_event)
+                cJSON_AddNumberToObject(button, "last_event_age_s",
+                                        telemetry.buttons[button_idx].last_event_age_s);
+            else
+                cJSON_AddNullToObject(button, "last_event_age_s");
+
+            cJSON *mqtt = cJSON_AddObjectToObject(button, "mqtt");
+            cJSON *gpio = cJSON_AddObjectToObject(button, "gpio");
+            ble_json_add_action_map(mqtt, &d->buttons[button_idx].mqtt);
+            ble_json_add_action_map(gpio, &d->buttons[button_idx].gpio);
+            cJSON_AddItemToArray(buttons, button);
+        }
         cJSON_AddItemToArray(arr, obj);
     }
     send_cjson(req, arr);
@@ -1459,17 +1543,22 @@ static esp_err_t handle_ble_reg_confirm(httpd_req_t *req)
 
     if (err == ESP_ERR_NO_MEM)      return send_error(req, "device list full");
     if (err == ESP_ERR_INVALID_ARG) return send_error(req, "mac already registered");
-    if (err != ESP_OK)              return send_error(req, "registration failed");
+    if (err == ESP_ERR_INVALID_STATE)
+        return send_error(req, "no captured device is waiting for confirmation");
+    if (err == ESP_ERR_NOT_SUPPORTED)
+        return send_error(req, "device exposes more buttons than supported");
+    if (err != ESP_OK)
+        return send_error(req, "could not validate the key against the captured packet");
 
     send_json(req, "{\"ok\":true}");
     return ESP_OK;
 }
 
 // PATCH /api/ble/device
-// Event fields are integer bitmasks referencing MQTT or GPIO action slots.
+// Button mappings are integer bitmasks referencing MQTT or GPIO action slots.
 static esp_err_t handle_ble_device_update(httpd_req_t *req)
 {
-    char body[256];
+    char body[2048];
     if (read_body(req, body, sizeof(body)) != ESP_OK)
         return send_error(req, "body too large");
 
@@ -1493,26 +1582,22 @@ static esp_err_t handle_ble_device_update(httpd_req_t *req)
 
     cJSON *lbl_item = cJSON_GetObjectItem(root, "label");
     cJSON *en_item  = cJSON_GetObjectItem(root, "enabled");
-    cJSON *sp_item  = cJSON_GetObjectItem(root, "single_press");
-    cJSON *dp_item  = cJSON_GetObjectItem(root, "double_press");
-    cJSON *tp_item  = cJSON_GetObjectItem(root, "triple_press");
-    cJSON *lp_item  = cJSON_GetObjectItem(root, "long_press");
-    cJSON *gsp_item = cJSON_GetObjectItem(root, "gpio_single_press");
-    cJSON *gdp_item = cJSON_GetObjectItem(root, "gpio_double_press");
-    cJSON *gtp_item = cJSON_GetObjectItem(root, "gpio_triple_press");
-    cJSON *glp_item = cJSON_GetObjectItem(root, "gpio_long_press");
+    cJSON *buttons_item = cJSON_GetObjectItem(root, "buttons");
     cJSON *key_item = cJSON_GetObjectItem(root, "key");
 
     if (cJSON_IsString(lbl_item)) strlcpy(current.label, lbl_item->valuestring, sizeof(current.label));
     if (cJSON_IsBool(en_item))    current.enabled      = cJSON_IsTrue(en_item);
-    if (cJSON_IsNumber(sp_item))  current.single_press = (uint16_t)sp_item->valuedouble;
-    if (cJSON_IsNumber(dp_item))  current.double_press = (uint16_t)dp_item->valuedouble;
-    if (cJSON_IsNumber(tp_item))  current.triple_press = (uint16_t)tp_item->valuedouble;
-    if (cJSON_IsNumber(lp_item))  current.long_press   = (uint16_t)lp_item->valuedouble;
-    if (cJSON_IsNumber(gsp_item)) current.gpio_single_press = (uint16_t)gsp_item->valuedouble;
-    if (cJSON_IsNumber(gdp_item)) current.gpio_double_press = (uint16_t)gdp_item->valuedouble;
-    if (cJSON_IsNumber(gtp_item)) current.gpio_triple_press = (uint16_t)gtp_item->valuedouble;
-    if (cJSON_IsNumber(glp_item)) current.gpio_long_press   = (uint16_t)glp_item->valuedouble;
+
+    if (buttons_item) {
+        const char *buttons_error = NULL;
+        ble_button_config_t next_buttons[BLE_ACCESS_MAX_BUTTONS];
+        if (!ble_parse_button_configs(buttons_item, current.button_count,
+                                      next_buttons, &buttons_error)) {
+            cJSON_Delete(root);
+            return send_error(req, buttons_error ? buttons_error : "invalid buttons payload");
+        }
+        memcpy(current.buttons, next_buttons, sizeof(current.buttons));
+    }
 
     if (cJSON_IsString(key_item) &&
             strlen(key_item->valuestring) > 0 &&
@@ -1724,17 +1809,11 @@ static esp_err_t handle_update_install(httpd_req_t *req)
 
 // ── Config backup / restore ──────────────────────────────────────────────────
 
-static uint16_t json_u16(cJSON *obj, const char *key)
-{
-    cJSON *v = cJSON_GetObjectItem(obj, key);
-    return cJSON_IsNumber(v) ? (uint16_t)v->valuedouble : 0;
-}
-
 // GET /api/system/config
 static esp_err_t handle_config_download(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "version", 2);
+    cJSON_AddNumberToObject(root, "version", 3);
 
     // WiFi STA
     cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
@@ -1844,14 +1923,19 @@ static esp_err_t handle_config_download(httpd_req_t *req)
             cJSON_AddStringToObject(o, "label", devs[i].label);
             cJSON_AddBoolToObject(o, "enabled", devs[i].enabled);
             cJSON_AddNumberToObject(o, "last_counter", devs[i].last_counter);
-            cJSON_AddNumberToObject(o, "single_press", devs[i].single_press);
-            cJSON_AddNumberToObject(o, "double_press", devs[i].double_press);
-            cJSON_AddNumberToObject(o, "triple_press", devs[i].triple_press);
-            cJSON_AddNumberToObject(o, "long_press", devs[i].long_press);
-            cJSON_AddNumberToObject(o, "gpio_single_press", devs[i].gpio_single_press);
-            cJSON_AddNumberToObject(o, "gpio_double_press", devs[i].gpio_double_press);
-            cJSON_AddNumberToObject(o, "gpio_triple_press", devs[i].gpio_triple_press);
-            cJSON_AddNumberToObject(o, "gpio_long_press", devs[i].gpio_long_press);
+            cJSON_AddNumberToObject(o, "button_count", devs[i].button_count);
+            cJSON *buttons = cJSON_AddArrayToObject(o, "buttons");
+            for (uint8_t button_idx = 0;
+                 button_idx < devs[i].button_count && button_idx < BLE_ACCESS_MAX_BUTTONS;
+                 button_idx++) {
+                cJSON *button = cJSON_CreateObject();
+                cJSON_AddNumberToObject(button, "idx", button_idx);
+                cJSON *mqtt = cJSON_AddObjectToObject(button, "mqtt");
+                cJSON *gpio = cJSON_AddObjectToObject(button, "gpio");
+                ble_json_add_action_map(mqtt, &devs[i].buttons[button_idx].mqtt);
+                ble_json_add_action_map(gpio, &devs[i].buttons[button_idx].gpio);
+                cJSON_AddItemToArray(buttons, button);
+            }
             cJSON_AddItemToArray(ba, o);
         }
     }
@@ -1887,6 +1971,9 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
     cJSON *root = cJSON_Parse(body);
     free(body);
     if (!root) return send_error(req, "invalid json");
+
+    cJSON *version_item = cJSON_GetObjectItem(root, "version");
+    int backup_version = cJSON_IsNumber(version_item) ? (int)version_item->valuedouble : 0;
 
     // WiFi STA
     cJSON *wifi = cJSON_GetObjectItem(root, "wifi");
@@ -2055,33 +2142,55 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
 
     // BLE devices
     cJSON *ba = cJSON_GetObjectItem(root, "ble_devices");
-    if (ba && cJSON_IsArray(ba)) {
+    if (ba) {
+        if (!cJSON_IsArray(ba)) {
+            cJSON_Delete(root);
+            return send_error(req, "ble_devices must be an array");
+        }
+        if (backup_version < 3) {
+            cJSON_Delete(root);
+            return send_error(req, "BLE backup schema v3 is required");
+        }
+
         ble_device_t devs[BLE_ACCESS_MAX_DEVICES];
         memset(devs, 0, sizeof(devs));
         int count = 0;
         cJSON *item;
         cJSON_ArrayForEach(item, ba) {
-            if (count >= BLE_ACCESS_MAX_DEVICES) break;
+            if (count >= BLE_ACCESS_MAX_DEVICES) {
+                cJSON_Delete(root);
+                return send_error(req, "too many BLE devices in backup");
+            }
             cJSON *mj = cJSON_GetObjectItem(item, "mac");
             cJSON *kj = cJSON_GetObjectItem(item, "key");
-            if (!cJSON_IsString(mj) || !cJSON_IsString(kj)) continue;
+            cJSON *bcj = cJSON_GetObjectItem(item, "button_count");
+            cJSON *buttons_j = cJSON_GetObjectItem(item, "buttons");
+            if (!cJSON_IsString(mj) || !cJSON_IsString(kj) || !cJSON_IsNumber(bcj)) {
+                cJSON_Delete(root);
+                return send_error(req, "invalid BLE backup entry");
+            }
             ble_device_t *d = &devs[count];
-            if (!mac_from_str(mj->valuestring, d->mac)) continue;
-            if (!key_from_str(kj->valuestring, d->key)) continue;
+            if (!mac_from_str(mj->valuestring, d->mac) || !key_from_str(kj->valuestring, d->key)) {
+                cJSON_Delete(root);
+                return send_error(req, "invalid BLE mac or key in backup");
+            }
             cJSON *lj = cJSON_GetObjectItem(item, "label");
             strlcpy(d->label, cJSON_IsString(lj) ? lj->valuestring : "Device", sizeof(d->label));
             cJSON *ej = cJSON_GetObjectItem(item, "enabled");
             d->enabled = cJSON_IsBool(ej) ? cJSON_IsTrue(ej) : true;
             cJSON *cj = cJSON_GetObjectItem(item, "last_counter");
             if (cJSON_IsNumber(cj)) d->last_counter = (uint32_t)cj->valuedouble;
-            d->single_press       = json_u16(item, "single_press");
-            d->double_press       = json_u16(item, "double_press");
-            d->triple_press       = json_u16(item, "triple_press");
-            d->long_press         = json_u16(item, "long_press");
-            d->gpio_single_press  = json_u16(item, "gpio_single_press");
-            d->gpio_double_press  = json_u16(item, "gpio_double_press");
-            d->gpio_triple_press  = json_u16(item, "gpio_triple_press");
-            d->gpio_long_press    = json_u16(item, "gpio_long_press");
+            int button_count = (int)bcj->valuedouble;
+            if (button_count < 1 || button_count > BLE_ACCESS_MAX_BUTTONS) {
+                cJSON_Delete(root);
+                return send_error(req, "invalid BLE button_count in backup");
+            }
+            d->button_count = (uint8_t)button_count;
+            const char *buttons_error = NULL;
+            if (!ble_parse_button_configs(buttons_j, d->button_count, d->buttons, &buttons_error)) {
+                cJSON_Delete(root);
+                return send_error(req, buttons_error ? buttons_error : "invalid BLE buttons in backup");
+            }
             count++;
         }
         nvs_handle_t h;
