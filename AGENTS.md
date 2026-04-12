@@ -15,6 +15,14 @@ Before doing non-trivial work, read:
 - [docs/VALIDATION.md](docs/VALIDATION.md)
 - [docs/WHERE_TO_START.md](docs/WHERE_TO_START.md)
 
+For project-scoped Codex runtime settings, also read:
+
+- `.codex/config.toml`
+
+For review-phase Codex subagent work, also read:
+
+- `.codex/agents/*.toml`
+
 ## Document roles
 
 Use the docs with these responsibilities in mind:
@@ -22,7 +30,11 @@ Use the docs with these responsibilities in mind:
 - `AGENTS.md`
   - repo policy and agent-specific guardrails
 - `docs/WORKFLOW.md`
-  - development cycle, release flow, and testing expectations
+  - development cycle, release flow, and review-agent invocation contract
+- `.codex/config.toml`
+  - project-scoped subagent runtime settings
+- `.codex/agents/*.toml`
+  - source of truth for reviewer identity, mandate, forbidden actions, and output contract
 - `docs/VALIDATION.md`
   - evidence ladder and fallback behavior when full validation is blocked
 - `docs/API_CONTRACTS.md`
@@ -39,11 +51,15 @@ Use the docs with these responsibilities in mind:
 If documents overlap or appear to conflict:
 
 - `README.md` is overview and operator-facing orientation
+- `docs/WORKFLOW.md` wins for development/review process and review-agent expectations
+- `.codex/config.toml` is runtime configuration only and does not participate in prose-doc conflict resolution
+- `.codex/agents/*.toml` win for reviewer-role definition and reviewer output contract
 - `docs/API_CONTRACTS.md` wins for HTTP payloads, config schema, and compatibility-sensitive API details
 - `docs/CONSOLE_STREAM_CONTRACT.md` wins for `/console`, `/api/console/stream`, SSE semantics, and console-browser behavior
 - `docs/PAGES_INSTALLER_CONTRACT.md` wins for the GitHub Pages installer, mirrored firmware payload, and browser install flow
 - `docs/RUNTIME_FLOW.md` wins for boot flow, ownership, and cross-module runtime behavior
-- `docs/WORKFLOW.md` and `docs/VALIDATION.md` win for release and validation expectations
+- `docs/VALIDATION.md` wins for validation expectations and fallback behavior
+- `AGENTS.md` wins for repository policy and agent process
 
 ## Core rules
 
@@ -64,38 +80,59 @@ If documents overlap or appear to conflict:
   - `source ~/esp/esp-idf/export.sh && ESPPORT=/dev/cu.usbmodem3101 scripts/idf-target.sh esp32c3-supermini flash`
 - After flashing, stop and let the user run on-device tests unless explicitly asked to do more.
 
-## Mandatory multi-agent review
+## User-directed review agents
 
-For non-trivial changes, run all three reviews:
+Review-phase agents are not invoked automatically.
+The user must explicitly say when to start review work and which review round
+they want.
+
+Default rule:
+
+- do not call `reviewer`, `architect`, `simplifier`, or `librarian` unless the
+  user explicitly asks for review agents in the current task
+- do not start or continue a `fix -> review -> fix -> review` loop unless the
+  user explicitly asks for that loop in the current task
+
+When the user explicitly requests a review round for non-trivial work, the
+default review set is:
 
 - `reviewer`
 - `architect`
 - `simplifier`
 
-This requirement is specifically for the review phase of the workflow.
-It does not redefine how generic work agents should be prompted for normal implementation, exploration, or research tasks.
-
-When invoking these review agents, ask for a structured response format as defined in [docs/WORKFLOW.md](docs/WORKFLOW.md).
-Also follow the review invocation guidance in [docs/WORKFLOW.md](docs/WORKFLOW.md):
-
-- declare the exact review scope
-- prompt the agent as a single-role reviewer only
-- explicitly forbid coordination/spawning/process commentary
-- close any previous review agents first, then spawn fresh ones for the new review round
-
-Review is not complete until:
-
-- all three agents have produced a clear, usable outcome
-- all actionable findings are fixed
-- and no obvious cleanup remains
-
-If an agent still finds issues, keep iterating and rerun the reviews.
-If tooling is unstable, say that explicitly instead of claiming review is complete.
-
-When the change meaningfully affects repository documentation, onboarding flow, review guidance, or agent operating instructions, also run:
+When the user explicitly requests a review round and the change significantly
+affects repository documentation, onboarding flow, workflow guidance, or agent
+instructions, also run:
 
 - `librarian`
-  - reviews documentation clarity, source-of-truth hierarchy, discoverability, actionability, and AI-agent friendliness
+
+Outside an explicit user-requested review phase, work may be completed with
+implementation plus validation only. In that case, say clearly in the handoff
+that review agents were not run because the user did not request them.
+
+The operational custom subagent definitions for review roles live in:
+
+- `.codex/agents/reviewer.toml`
+- `.codex/agents/architect.toml`
+- `.codex/agents/simplifier.toml`
+- `.codex/agents/librarian.toml`
+
+Treat `.codex/agents/*.toml` as the source of truth for reviewer identity,
+mandate, forbidden actions, and output format.
+
+When invoking these review agents, follow the review invocation contract in
+`docs/WORKFLOW.md` and keep `AGENTS.md` at the policy level only.
+
+When the user has explicitly asked for a review phase, review is not complete
+until:
+
+- all user-requested agents have produced a clear, usable outcome
+- all actionable findings that the user wants addressed in that round are fixed
+- and no obvious cleanup remains within the requested review scope
+
+If an agent still finds issues and the user asked for a review loop, keep
+iterating and rerun the requested reviews.
+If tooling is unstable, say that explicitly instead of claiming review is complete.
 
 ## Git / PR rules
 

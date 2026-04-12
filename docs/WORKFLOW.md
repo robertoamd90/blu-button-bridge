@@ -9,7 +9,7 @@ For normal feature or fix work:
 1. implement the change cleanly
 2. run a target-aware build+flash for the active board profile
 3. let the user test on the board
-4. only after successful validation proceed with commit / PR / merge
+4. only after successful validation and any user-requested review proceed with commit / PR / merge
 
 Examples:
 
@@ -40,18 +40,29 @@ Default local assumptions for this repo:
 
 If one of these assumptions is false, follow the fallback rules in [docs/VALIDATION.md](VALIDATION.md).
 
-## 2. Multi-agent review flow
+## 2. User-directed review flow
 
-Non-trivial work must go through three independent reviews:
+Review-phase agents are opt-in for this repository.
+Do not invoke review agents unless the user explicitly asks for them in the
+current task.
+
+Default rule:
+
+- do not automatically start review agents after implementation
+- do not automatically enter a `fix -> review -> fix -> review` loop
+- if review agents were not requested, say that explicitly in the handoff
+
+When the user explicitly asks for a review round on non-trivial work, the
+default review set is three independent reviews:
 
 - `reviewer`
-  - looks for bugs, regressions, hidden risks, missing test coverage
+  - looks for bugs, regressions, hidden risks, and missing validation
 - `architect`
-  - checks boundaries, ownership, layering, and whether the solution fits the project structure
+  - checks boundaries, ownership, layering, and fit with the intended project structure
 - `simplifier`
   - looks for duplication, unnecessary branches, redundant state, and patch-on-patch complexity
 
-When the change significantly affects repository documentation, onboarding flow, workflow guidance, or agent instructions, also run:
+When the user explicitly asks for a review round and the change significantly affects repository documentation, onboarding flow, workflow guidance, or agent instructions, also run:
 
 - `librarian`
   - reviews documentation clarity, source-of-truth hierarchy, onboarding speed, task discoverability, actionability, and AI-agent friendliness
@@ -59,65 +70,63 @@ When the change significantly affects repository documentation, onboarding flow,
 This section applies to review-phase agents only.
 It does not impose the same response format on generic agents doing implementation or exploration work.
 
+Stable reviewer-role definitions live in:
+
+- `.codex/agents/reviewer.toml`
+- `.codex/agents/architect.toml`
+- `.codex/agents/simplifier.toml`
+- `.codex/agents/librarian.toml`
+
+Treat those files as the source of truth for reviewer identity, mandate,
+forbidden actions, and output format.
+When the host supports project-scoped custom subagent discovery, the review
+runner should load the named subagents from those files as entry points.
+The invocation prompt should add only the current review scope, objective, and
+any truly local emphasis.
+
 ### Review-agent output contract
 
-Invoke each review agent with a request for structured output.
-Free-form feedback is not sufficient unless it is still clearly organized into the required sections below.
-
-Minimum shared rules for all three review agents:
-
-- keep findings practical and actionable
-- cite specific files when pointing at an issue
-- prefer severity-labelled findings when reporting problems
-- say explicitly when there are no material findings
-- avoid generic praise or vague “looks good” responses without a verdict
-
-The same structured-output discipline should also be used for `librarian`.
-
-Required sections for every review agent:
-
-- `VERDICT`
-  - one of:
-    - `APPROVE`
-    - `APPROVE WITH NOTES`
-    - `CHANGES REQUESTED`
-- `FINDINGS`
-  - ordered by severity
-  - each finding should use `HIGH`, `MEDIUM`, or `LOW`
-  - each finding should explain the concrete risk or cleanup needed
-- `OPEN QUESTIONS`
-  - optional when there are no open questions
-
-If there are no material findings, require this explicitly:
-
-- `VERDICT`
-- `FINDINGS`
-  - `NO MATERIAL FINDINGS`
+Each reviewer's exact output contract is defined in the matching
+`.codex/agents/*.toml` file.
+`docs/WORKFLOW.md` should be treated only as invocation and runner guidance.
 
 ### Review invocation discipline
 
-When invoking review-phase agents, prompt them as single-purpose reviewers, not as coordinators.
+When invoking review-phase agents, spawn the named custom subagent for the role
+from `.codex/agents/` and prompt it as a single-purpose reviewer, not as a
+coordinator.
 
-Each review agent should be told explicitly:
+The named custom subagent already carries the reviewer contract.
+Do not restate the full prohibition set in the task prompt unless tooling
+limitations prevent the subagent definition from being loaded.
 
-- it is responsible only for its own role
-- it must not coordinate or restate the three-agent workflow
-- it must not spawn or suggest other review agents
-- it must not discuss tool instability unless it truly cannot inspect the requested scope
-- it should return only the structured review result
+Expected runtime support:
+- the review runner must support project-scoped custom subagent discovery from `.codex/agents/`
+- it must also support closing and respawning those named subagents between rounds
 
-This matters especially when the inherited context already mentions that the repo requires
-`reviewer`, `architect`, and `simplifier`. Without a local-only instruction, an agent may
-misread its job and start orchestrating the whole review instead of performing its own pass.
+Fallback when that support is unavailable:
+- treat the matching `.codex/agents/<role>.toml` file as the reviewer contract
+- emulate the role with a generic read-only agent
+- keep the task prompt limited to scope, objective, and any truly local emphasis
+- say explicitly in the handoff that named custom subagent loading was unavailable for that run
 
-Recommended wording:
+Concrete fallback template for a generic read-only agent:
 
-- `You are ONLY the <role> reviewer for this change.`
-- `Review only the requested scope.`
-- `Do not coordinate other reviewers.`
-- `Do not spawn or suggest sub-agents.`
-- `Do not discuss the review process.`
-- `Return only the final structured report.`
+```text
+Use `.codex/agents/<role>.toml` in this repository as the full reviewer contract.
+Do not edit files, run builds, spawn agents, coordinate other reviewers, or add process commentary.
+
+Review only this scope:
+<explicit scope here>
+
+Objective of this review round:
+<explicit objective here>
+
+Local emphasis for this round:
+<optional, only when truly needed>
+
+Return ONLY the final structured report required by `.codex/agents/<role>.toml`.
+```
 
 ### Review scope selection
 
@@ -143,120 +152,48 @@ When asking for a full-repo review, say whether you want:
 - a contract-focused audit against docs
 - an architecture audit of current boundaries
 
-If you use `fork_context`, still restate the intended scope explicitly in the review prompt.
-
 ### Fresh-agent rule
 
 For review rounds, do not reuse old review agents.
 
-- close any previous `reviewer`, `architect`, and `simplifier` agents first
+- close any previous `reviewer`, `architect`, `simplifier`, and `librarian` agents first
 - spawn fresh agents for the new review round
+- when the project-scoped custom subagent exists, use it instead of emulating the role with a generic agent
 - do this even when the previous agents already reviewed a nearby diff
-
-Why this rule exists:
-
-- it avoids stale context and cached assumptions
-- it reduces the chance of agents citing old file paths or pre-fix findings
-- it makes each review round easier to interpret as a clean verdict on the requested scope
 
 ### Review prompt template
 
-Use this base template and swap in the role-specific focus and requested scope.
+Use this base template with the relevant named custom subagent.
 
 ```text
-You are ONLY the `<role>` reviewer for this change.
-
 Review only this scope:
 <explicit scope here>
 
-Do NOT coordinate other reviewers.
-Do NOT spawn or suggest sub-agents.
-Do NOT discuss the review process.
-Do NOT give implementation plans.
+Objective of this review round:
+<explicit objective here>
+
+Local emphasis for this round:
+<optional, only when truly needed>
+
 Return ONLY the final structured report.
-
-Focus only on:
-<role-specific focus here>
-
-Use file-specific evidence from the requested scope.
-
-Required output:
-
-VERDICT
-<APPROVE|APPROVE WITH NOTES|CHANGES REQUESTED>
-
-FINDINGS
-- <HIGH|MEDIUM|LOW>: <finding with concrete risk and file reference>
-- If there are no material findings, write exactly: NO MATERIAL FINDINGS
-
-TOP STRENGTHS
-- <optional for most review roles; required for librarian>
-
-OPEN QUESTIONS
-- <optional>
 ```
 
-### Role-specific expectations
-
-`reviewer` should focus on:
-
-- bugs
-- regressions
-- edge cases
-- missing validation or test coverage
-
-`architect` should focus on:
-
-- module boundaries
-- ownership
-- layering
-- whether the change fits the intended project structure
-
-`simplifier` should focus on:
-
-- duplication
-- unnecessary branches or flags
-- redundant state
-- ways to reduce patch-on-patch complexity
-
-`librarian` should focus on:
-
-- clarity of documentation
-- source-of-truth hierarchy
-- onboarding speed for a new coding agent
-- task-to-doc discoverability
-- actionability of instructions
-- AI-agent friendliness
-- ambiguity or stale-guidance risk
-
-For `librarian`, extend the structured output with:
-
-- `TOP STRENGTHS`
-  - 1-3 short points on what the documentation set does especially well
-
-### Recommended scope examples
-
-Examples:
-
-- staged diff reviewer:
-  - `Review the currently staged diff in /path/to/repo. Focus on bugs, regressions, edge cases, and missing validation.`
-- branch diff architect:
-  - `Review the diff between origin/main and HEAD in /path/to/repo. Focus on module boundaries, ownership, and layering.`
-- full repo simplifier:
-  - `Review the current repository state in /path/to/repo, not just the diff. Focus on duplication, redundant state, and complexity that can be reduced.`
-- full repo librarian:
-  - `Review the current documentation set in /path/to/repo from the perspective of a new coding agent. Focus on clarity, source-of-truth hierarchy, onboarding speed, task discoverability, actionability, and AI-agent friendliness.`
+Host-facing reviewer selection is runtime-specific.
+For example, hosts that support subagent mentions may select a reviewer with a
+handle such as `[@reviewer](subagent://reviewer)`.
 
 ### Completion rule
 
-Review is not complete until:
+When the user has explicitly asked for a review phase, review is not complete until:
 
-- all three agents have returned a clear, usable result
-- all actionable findings are fixed
-- and there are no remaining obvious items to clean up
+- all user-requested agents have returned a clear, usable result
+- all actionable findings that the user wants addressed in that round are fixed
+- and there are no remaining obvious items to clean up within the requested scope
 
-If one or more agents still find issues, keep iterating and rerun the reviews.
-Do not stop at “good enough” if the agents are still pointing at real work to do.
+If one or more agents still find issues and the user asked for a review loop,
+keep iterating and rerun the requested reviews.
+Do not start a new review round unless the user asked for that loop or asks for
+another explicit review pass.
 
 ### Tool instability rule
 

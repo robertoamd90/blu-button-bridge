@@ -209,6 +209,8 @@ Start with:
 
 - `AGENTS.md`
 - `docs/WORKFLOW.md`
+- `.codex/config.toml`
+- `.codex/agents/*.toml`
 - `docs/VALIDATION.md`
 - `docs/WHERE_TO_START.md`
 - `README.md`
@@ -226,12 +228,16 @@ Start with:
 
 - `docs/WORKFLOW.md`
 - `AGENTS.md`
+- `.codex/config.toml`
+- `.codex/agents/*.toml`
 
 Look for:
 
-- required review roles
-- structured output contract
+- whether review is opt-in for the current task
+- the default review set once the user explicitly asks for review
+- reviewer-role definitions and output contract in `.codex/agents/*.toml`
 - exact review scope to pass
-- prompt wording that keeps each agent in its own role
+- the prompt shape of scope + objective + any truly local emphasis
 - the rule to close old review agents and spawn fresh ones for every review round
+- fallback behavior when project-scoped custom subagent loading is unavailable
 - when to add the `librarian` documentation-clarity review

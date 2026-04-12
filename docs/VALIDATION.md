@@ -112,10 +112,15 @@ Examples:
 
 ## 6. Review requirements
 
-For non-trivial work, validation also includes the multi-agent review required by:
+Review is user-directed in this repository.
+If the user explicitly requests a review phase for the current task, validation
+also includes completing that requested review round as defined by:
 
 - [AGENTS.md](../AGENTS.md)
 - [docs/WORKFLOW.md](WORKFLOW.md)
+
+If the user did not request review agents, say that explicitly in the handoff
+instead of implying that review is part of the completed validation evidence.
 
 This document focuses on validation fallback and evidence quality, not on redefining the full review process.
 
