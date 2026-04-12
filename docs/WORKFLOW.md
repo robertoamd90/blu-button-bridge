@@ -226,9 +226,9 @@ Use repository-style branch names when possible:
 - `refactor/<short-slug>` for refactors
 - `hardening/<short-slug>` for stabilization / recovery work
 
-Prefer short readable slugs. When a branch is tied to a GitHub issue, including the issue number in the slug is encouraged, for example:
+Prefer short readable slugs that match the repository's existing style, for example:
 
-- `feat/issue-22-multi-button-ble`
+- `feat/multi-button-ble`
 - `fix/wifi-reconnect-backoff`
 
 Prefer the repository's abbreviated prefixes such as `feat/` over longer variants such as `feature/`.
