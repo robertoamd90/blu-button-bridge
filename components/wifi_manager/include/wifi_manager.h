@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include "esp_err.h"
 
 #define WIFI_STATUS_LIST \
     X(NOT_CONFIG, "not config") \
@@ -81,5 +82,5 @@ bool wifi_get_ssid(char *buf, size_t len);
 bool wifi_get_password_set(void);
 
 // Performs a WiFi scan and fills results[0..max_count-1].
-// Returns the number of networks found (>= 0), or -1 on error.
-int wifi_scan_get_results(wifi_scan_entry_t *results, int max_count);
+// Returns ESP_OK on success and writes the number of networks to out_count.
+esp_err_t wifi_scan_get_results(wifi_scan_entry_t *results, int max_count, int *out_count);

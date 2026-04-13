@@ -744,7 +744,11 @@
     btn.disabled = true; btn.textContent = 'Scanning…';
     document.getElementById('scan-results').style.display = 'none';
     try {
-      const nets = await (await fetch('/api/wifi/scan')).json();
+      const res = await fetch('/api/wifi/scan');
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || 'Scan failed');
+
+      const nets = payload;
       const list = document.getElementById('scan-list');
       list.innerHTML = '';
       if (!nets.length) {
@@ -761,7 +765,7 @@
         });
       }
       document.getElementById('scan-results').style.display = 'block';
-    } catch(e) { toast('toast-wifi', false, 'Scan failed'); }
+    } catch(e) { toast('toast-wifi', false, e.message || 'Scan failed'); }
     btn.disabled = false; btn.textContent = 'Scan';
   }
 
@@ -1596,7 +1600,7 @@
   setInterval(() => {
     refreshStatus();
     loadBleDevices();
-  }, 5000);
+  }, 2000);
 </script>
 </body>
 </html>

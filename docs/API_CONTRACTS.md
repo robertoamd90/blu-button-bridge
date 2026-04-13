@@ -12,7 +12,7 @@ All routes below require auth when HTTP Basic Auth is enabled.
 | `GET` | `/api/console/stream` | SSE stream with backlog + live console lines |
 | `GET` | `/api/status` | Status snapshot; response shape documented here |
 | `GET` | `/api/wifi/config` | Response shape documented here |
-| `GET` | `/api/wifi/scan` | Returns array of `{ssid,rssi}` |
+| `GET` | `/api/wifi/scan` | Returns array of `{ssid,rssi}`; may return `409` while WiFi is reconnecting |
 | `POST` | `/api/wifi/connect` | JSON body; asynchronous connect |
 | `DELETE` | `/api/wifi` | Clear credentials and disconnect |
 | `POST` | `/api/ap/start` | `{"ok":true}` on success |

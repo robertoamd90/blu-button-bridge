@@ -852,8 +852,15 @@ static esp_err_t handle_wifi_config_get(httpd_req_t *req)
 static esp_err_t handle_wifi_scan(httpd_req_t *req)
 {
     wifi_scan_entry_t results[20];
-    int n = wifi_scan_get_results(results, 20);
-    if (n < 0) return send_error(req, "scan failed");
+    int n = 0;
+    esp_err_t err = wifi_scan_get_results(results, 20, &n);
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_error_status(req, "409 Conflict",
+                                 "scan unavailable while WiFi is connecting");
+    }
+    if (err != ESP_OK) {
+        return send_error(req, "scan failed");
+    }
 
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < n; i++) {

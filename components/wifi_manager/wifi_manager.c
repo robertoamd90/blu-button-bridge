@@ -24,12 +24,17 @@ static wifi_status_cb_t     s_status_cb = NULL;
 static wifi_ap_status_cb_t  s_ap_status_cb = NULL;
 static TimerHandle_t        s_reconnect_timer = NULL;
 static volatile bool        s_ap_active = false;
+static volatile bool        s_manual_reconfig_in_progress = false;
 static TaskHandle_t         s_dns_task_handle = NULL;
 static esp_netif_t         *s_sta_netif = NULL;
 
 static void set_status(wifi_status_t status);
 static void notify_ap_status(void);
 static bool wifi_reason_is_config_error(wifi_err_reason_t reason);
+static bool load_credentials(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
+static bool wifi_apply_sta_config_and_connect(const char *ssid, const char *pass);
+static bool wifi_reload_credentials_and_connect(void);
+static void wifi_connect(const char *ssid, const char *pass);
 
 // AP config in RAM — ssid is overwritten at runtime by wifi_ap_load_config (MAC-based)
 static wifi_ap_settings_t s_ap_cfg = {
@@ -73,6 +78,10 @@ static void on_wifi_got_ip(void *arg, esp_event_base_t base, int32_t id, void *d
 static void reconnect_timer_cb(TimerHandle_t t)
 {
     (void)t;
+    if (s_manual_reconfig_in_progress) {
+        return;
+    }
+
     if (s_status == WIFI_STATUS_CONNECTING || s_status == WIFI_STATUS_ERROR) {
         set_status(WIFI_STATUS_CONNECTING);
         esp_wifi_connect();
@@ -86,13 +95,17 @@ static void on_wifi_disconnected(void *arg, esp_event_base_t base, int32_t id, v
     (void)id;
     wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)data;
 
+    if (s_manual_reconfig_in_progress) {
+        return;
+    }
+
     if (s_status != WIFI_STATUS_DISABLED && s_status != WIFI_STATUS_NOT_CONFIG) {
-        if (!event || event->reason != WIFI_REASON_ASSOC_LEAVE) {
+        if (!event || (event->reason != WIFI_REASON_ASSOC_LEAVE &&
+                       event->reason != WIFI_REASON_STA_LEAVING)) {
             if (event && wifi_reason_is_config_error(event->reason)) {
                 set_status(WIFI_STATUS_ERROR);
             } else {
                 set_status(WIFI_STATUS_CONNECTING);
-                esp_wifi_connect();
             }
             xTimerReset(s_reconnect_timer, 0);
         }
@@ -138,6 +151,50 @@ static bool wifi_reason_is_config_error(wifi_err_reason_t reason)
     }
 }
 
+static bool wifi_apply_sta_config_and_connect(const char *ssid, const char *pass)
+{
+    if (!ssid || ssid[0] == '\0') {
+        return false;
+    }
+
+    wifi_config_t cfg = {};
+    cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+
+    size_t ssid_len = strnlen(ssid, sizeof(cfg.sta.ssid));
+    memcpy(cfg.sta.ssid, ssid, ssid_len);
+    strlcpy((char *)cfg.sta.password, pass ? pass : "", sizeof(cfg.sta.password));
+
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "set sta config failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "connect attempt failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    return true;
+}
+
+static bool wifi_reload_credentials_and_connect(void)
+{
+    char ssid[33] = {};
+    char pass[65] = {};
+
+    if (!load_credentials(ssid, sizeof(ssid), pass, sizeof(pass))) {
+        set_status(WIFI_STATUS_NOT_CONFIG);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "connecting to %s", ssid);
+    set_status(WIFI_STATUS_CONNECTING);
+    return wifi_apply_sta_config_and_connect(ssid, pass);
+}
+
 static void set_device_hostname(void)
 {
     if (!s_sta_netif) return;
@@ -165,17 +222,17 @@ static void wifi_connect(const char *ssid, const char *pass)
 {
     xTimerStop(s_reconnect_timer, 0);
     set_status(WIFI_STATUS_CONNECTING);
-    esp_wifi_disconnect();            // no-op if not connected; ensures clean state
-    vTaskDelay(pdMS_TO_TICKS(300));   // let the disconnect event settle
+    s_manual_reconfig_in_progress = true;
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(200));
 
-    wifi_config_t cfg = {};
-    cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-    size_t ssid_len = strnlen(ssid, sizeof(cfg.sta.ssid));
-    memcpy(cfg.sta.ssid, ssid, ssid_len);
-    strlcpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password));
-    esp_wifi_set_config(WIFI_IF_STA, &cfg);
-    esp_wifi_connect();
+    bool started = wifi_apply_sta_config_and_connect(ssid, pass);
+    s_manual_reconfig_in_progress = false;
+
+    if (!started) {
+        set_status(WIFI_STATUS_ERROR);
+        xTimerReset(s_reconnect_timer, 0);
+    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -244,6 +301,7 @@ void wifi_set_ap_status_callback(wifi_ap_status_cb_t cb)
 
 void wifi_disconnect(void)
 {
+    s_manual_reconfig_in_progress = false;
     set_status(WIFI_STATUS_DISABLED);
     xTimerStop(s_reconnect_timer, 0);
     esp_wifi_disconnect();
@@ -251,6 +309,7 @@ void wifi_disconnect(void)
 
 void wifi_clean_credentials(void)
 {
+    s_manual_reconfig_in_progress = false;
     set_status(WIFI_STATUS_NOT_CONFIG);
     xTimerStop(s_reconnect_timer, 0);
     esp_wifi_disconnect();
@@ -286,17 +345,9 @@ void wifi_init(void)
     // Application logic: load config, start AP and/or connect
     wifi_ap_load_config(&s_ap_cfg);
 
-    char ssid[33] = {};
-    char pass[65] = {};
-    bool has_creds = load_credentials(ssid, sizeof(ssid), pass, sizeof(pass));
-
-    if (s_ap_cfg.enabled || !has_creds) {
+    bool started_from_saved_credentials = wifi_reload_credentials_and_connect();
+    if (s_ap_cfg.enabled || !started_from_saved_credentials) {
         wifi_start_ap();
-    }
-
-    if (has_creds) {
-        ESP_LOGI(TAG, "connecting to %s", ssid);
-        wifi_connect(ssid, pass);
     }
 }
 
@@ -485,17 +536,28 @@ bool wifi_get_password_set(void)
     return has;
 }
 
-int wifi_scan_get_results(wifi_scan_entry_t *results, int max_count)
+esp_err_t wifi_scan_get_results(wifi_scan_entry_t *results, int max_count, int *out_count)
 {
-    if (esp_wifi_scan_start(NULL, true) != ESP_OK) return -1;
+    if (!results || max_count <= 0 || !out_count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t err = esp_wifi_scan_start(NULL, true);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_WIFI_STATE) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        return err;
+    }
 
     uint16_t count = (uint16_t)max_count;
     wifi_ap_record_t *aps = malloc(sizeof(wifi_ap_record_t) * max_count);
-    if (!aps) return -1;
+    if (!aps) return ESP_ERR_NO_MEM;
 
-    if (esp_wifi_scan_get_ap_records(&count, aps) != ESP_OK) {
+    err = esp_wifi_scan_get_ap_records(&count, aps);
+    if (err != ESP_OK) {
         free(aps);
-        return -1;
+        return err;
     }
 
     for (int i = 0; i < (int)count; i++) {
@@ -504,5 +566,6 @@ int wifi_scan_get_results(wifi_scan_entry_t *results, int max_count)
     }
 
     free(aps);
-    return (int)count;
+    *out_count = (int)count;
+    return ESP_OK;
 }
