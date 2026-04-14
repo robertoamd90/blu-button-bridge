@@ -42,6 +42,8 @@ extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
 extern const uint8_t console_html_start[] asm("_binary_console_html_start");
 extern const uint8_t console_html_end[]   asm("_binary_console_html_end");
+extern const uint8_t wifi_handoff_html_start[] asm("_binary_wifi_handoff_html_start");
+extern const uint8_t wifi_handoff_html_end[]   asm("_binary_wifi_handoff_html_end");
 
 typedef struct {
     bool enabled;
@@ -488,12 +490,15 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
 }
 // ── Async background tasks (WiFi/MQTT connect without blocking the HTTP path) ─
 
-typedef struct { char ssid[33]; char pass[65]; bool has_pass; } wifi_creds_t;
+typedef struct { char ssid[33]; char pass[65]; bool has_pass; bool handoff; } wifi_creds_t;
 typedef struct { char host[128]; uint32_t port; char user[64]; char pass[64]; bool tls; bool has_pass; } mqtt_creds_t;
 
 static void wifi_connect_task(void *arg)
 {
     wifi_creds_t *c = (wifi_creds_t *)arg;
+    if (c->handoff) {
+        wifi_arm_ap_handoff();
+    }
     wifi_connect_api(c->ssid, c->pass, c->has_pass);
     free(c);
     vTaskDelete(NULL);
@@ -514,6 +519,15 @@ static esp_err_t handle_root(httpd_req_t *req)
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, (const char *)index_html_start,
                     index_html_end - index_html_start);
+    return ESP_OK;
+}
+
+static esp_err_t handle_wifi_handoff_page(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_send(req, (const char *)wifi_handoff_html_start,
+                    wifi_handoff_html_end - wifi_handoff_html_start);
     return ESP_OK;
 }
 
@@ -660,11 +674,17 @@ static esp_err_t handle_console_stream(httpd_req_t *req)
 static esp_err_t handle_status(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
+    char sta_ip[16] = {};
     cJSON *obj = cJSON_CreateObject();
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     cJSON_AddStringToObject(obj, "wifi",        wifi_status_str(wifi_get_status()));
+    cJSON_AddBoolToObject  (obj, "wifi_error_latched", wifi_get_error_latched());
     cJSON_AddStringToObject(obj, "mqtt",        mqtt_status_str(mqtt_get_status()));
     cJSON_AddStringToObject(obj, "ap",          wifi_ap_is_active() ? "up" : "down");
     cJSON_AddStringToObject(obj, "ble",         ble_status_str(ble_get_status()));
+    if (wifi_get_sta_ip(sta_ip, sizeof(sta_ip))) {
+        cJSON_AddStringToObject(obj, "sta_ip", sta_ip);
+    }
     cJSON_AddStringToObject(obj, "fw_version",  app->version);
     send_cjson(req, obj);
     return ESP_OK;
@@ -682,6 +702,13 @@ static esp_err_t handle_ap_start(httpd_req_t *req)
 static esp_err_t handle_ap_stop(httpd_req_t *req)
 {
     wifi_stop_ap();
+    send_json(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+static esp_err_t handle_ap_handoff_complete(httpd_req_t *req)
+{
+    wifi_complete_ap_handoff();
     send_json(req, "{\"ok\":true}");
     return ESP_OK;
 }
@@ -769,13 +796,24 @@ static esp_err_t handle_wifi_connect(httpd_req_t *req)
     strlcpy(c->ssid, ssid_item->valuestring, sizeof(c->ssid));
     strlcpy(c->pass, cJSON_IsString(pass_item) ? pass_item->valuestring : "", sizeof(c->pass));
     c->has_pass = cJSON_IsString(pass_item);
+    wifi_ap_settings_t ap_cfg;
+    wifi_ap_load_config(&ap_cfg);
+    c->handoff = wifi_ap_is_active() && !ap_cfg.enabled;
+    const bool handoff = c->handoff;
     cJSON_Delete(root);
 
     if (xTaskCreate(wifi_connect_task, "wifi_conn", 4096, c, 5, NULL) != pdPASS) {
         free(c);
         return send_error(req, "could not start task");
     }
-    send_json(req, "{\"ok\":true}");
+
+    cJSON *obj = cJSON_CreateObject();
+    cJSON_AddBoolToObject(obj, "ok", true);
+    if (handoff) {
+        cJSON_AddBoolToObject(obj, "handoff", true);
+        cJSON_AddStringToObject(obj, "redirect", "/wifi-handoff");
+    }
+    send_cjson(req, obj);
     return ESP_OK;
 }
 
@@ -2239,6 +2277,7 @@ void web_manager_init(void)
 
     static const route_def_t routes[] = {
         { .uri = "/",                         .method = HTTP_GET,    .handler = handle_root,                .auth_required = true },
+        { .uri = "/wifi-handoff",             .method = HTTP_GET,    .handler = handle_wifi_handoff_page,   .auth_required = true },
         { .uri = "/console",                  .method = HTTP_GET,    .handler = handle_console_page,        .auth_required = true },
         { .uri = "/api/console/stream",       .method = HTTP_GET,    .handler = handle_console_stream,      .auth_required = true },
         { .uri = "/api/status",               .method = HTTP_GET,    .handler = handle_status,              .auth_required = true },
@@ -2262,6 +2301,7 @@ void web_manager_init(void)
         { .uri = "/api/gpio/action/test",     .method = HTTP_POST,   .handler = handle_gpio_action_test,    .auth_required = true },
         { .uri = "/api/ap/start",             .method = HTTP_POST,   .handler = handle_ap_start,            .auth_required = true },
         { .uri = "/api/ap/stop",              .method = HTTP_POST,   .handler = handle_ap_stop,             .auth_required = true },
+        { .uri = "/api/ap/handoff/complete",  .method = HTTP_POST,   .handler = handle_ap_handoff_complete, .auth_required = true },
         { .uri = "/api/ap/config",            .method = HTTP_GET,    .handler = handle_ap_config_get,       .auth_required = true },
         { .uri = "/api/ap/config",            .method = HTTP_POST,   .handler = handle_ap_config_set,       .auth_required = true },
         { .uri = "/api/system/reboot",        .method = HTTP_POST,   .handler = handle_system_reboot,       .auth_required = true },

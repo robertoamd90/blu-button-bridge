@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BluButtonBridge Setup Handoff</title>
+  <script>
+    (function () {
+      try {
+        const saved = localStorage.getItem('bbb-ui-theme') || 'system';
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const resolved = saved === 'system' ? (prefersDark ? 'dark' : 'light') : saved;
+        document.documentElement.setAttribute('data-theme', resolved);
+        document.documentElement.style.colorScheme = resolved;
+      } catch (e) {}
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg-top: #f9fbfd;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --border: #d6dfeb;
+      --text: #17324d;
+      --muted: #5c7289;
+      --accent: #0f766e;
+      --accent-soft: #d7f5f1;
+      --warn: #b45309;
+      --warn-soft: #fff1d6;
+      --err: #b91c1c;
+      --err-soft: #fee2e2;
+      --shadow: 0 20px 50px rgba(15, 23, 42, .08);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg-top: #0b1220;
+      --bg: #111827;
+      --panel: #1f2937;
+      --border: #374151;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #67e8f9;
+      --accent-soft: #0f3a46;
+      --warn: #fdba74;
+      --warn-soft: #422006;
+      --err: #fca5a5;
+      --err-soft: #431407;
+      --shadow: 0 20px 50px rgba(0, 0, 0, .45);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg) 100%);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      padding: 1.5rem;
+      transition: background-color .2s ease, color .2s ease;
+    }
+    main {
+      width: min(100%, 34rem);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 1.25rem;
+      padding: 1.4rem;
+      box-shadow: var(--shadow);
+    }
+    h1 { margin: 0 0 .4rem; font-size: 1.45rem; }
+    p { margin: 0; line-height: 1.5; }
+    .status, .ready, .error {
+      margin-top: 1rem;
+      border-radius: 1rem;
+      padding: 1rem;
+    }
+    .status { background: var(--accent-soft); color: var(--accent); }
+    .ready { display: none; background: var(--warn-soft); color: var(--warn); }
+    .error { display: none; background: var(--err-soft); color: var(--err); }
+    .ip {
+      display: inline-block;
+      margin-top: .8rem;
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .actions { margin-top: 1rem; }
+    .actions a {
+      display: inline-block;
+      background: var(--text);
+      color: #fff;
+      text-decoration: none;
+      padding: .8rem 1rem;
+      border-radius: .8rem;
+      font-weight: 600;
+    }
+    :root[data-theme="dark"] .actions a { color: #111827; }
+    .muted { margin-top: .8rem; color: var(--muted); font-size: .95rem; }
+    .retry { color: inherit; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>WiFi handoff in progress</h1>
+    <p>This page stays on the setup AP long enough to show the new device IP.</p>
+
+    <div class="status" id="status-box">
+      <strong id="status-title">Connecting to your WiFi…</strong>
+      <p id="status-copy" class="muted">Waiting for DHCP to assign an IP address.</p>
+    </div>
+
+    <div class="ready" id="ready-box">
+      <strong>Connected successfully.</strong>
+      <div class="ip" id="ip-text">...</div>
+      <div class="actions">
+        <a id="ip-link" href="/">Open the device on the new IP</a>
+      </div>
+      <p class="muted">If the page does not open immediately, wait for your phone or computer to leave the BBB setup network, then tap the button again.</p>
+    </div>
+
+    <div class="error" id="error-box">
+      <strong>Connection failed.</strong>
+      <p class="muted">The setup AP stays available so you can go back and try again.</p>
+      <div class="actions">
+        <a class="retry" href="/">Return to setup</a>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const statusTitle = document.getElementById('status-title');
+    const statusCopy = document.getElementById('status-copy');
+    const readyBox = document.getElementById('ready-box');
+    const errorBox = document.getElementById('error-box');
+    const ipText = document.getElementById('ip-text');
+    const ipLink = document.getElementById('ip-link');
+    let handoffCompleteSent = false;
+    let terminalState = false;
+
+    async function completeHandoff() {
+      if (handoffCompleteSent) return;
+      handoffCompleteSent = true;
+      try {
+        await fetch('/api/ap/handoff/complete?_=' + Date.now(), { method: 'POST', cache: 'no-store' });
+      } catch (e) {}
+    }
+
+    function showReady(ip) {
+      terminalState = true;
+      statusTitle.textContent = 'Ready to switch over';
+      statusCopy.textContent = 'The setup AP will close automatically in a few seconds.';
+      readyBox.style.display = 'block';
+      ipText.textContent = ip;
+      ipLink.href = 'http://' + ip + '/';
+      ipLink.textContent = 'Open http://' + ip + '/';
+      completeHandoff();
+    }
+
+    function showError(message) {
+      terminalState = true;
+      statusTitle.textContent = 'Could not join the WiFi network';
+      statusCopy.textContent = message;
+      errorBox.style.display = 'block';
+    }
+
+    async function pollStatus() {
+      if (terminalState) return;
+
+      try {
+        const res = await fetch('/api/status?_=' + Date.now(), { cache: 'no-store' });
+        const data = await res.json();
+
+        if (data.sta_ip) {
+          showReady(data.sta_ip);
+          return;
+        }
+
+        if (data.wifi_error_latched || data.wifi === 'error') {
+          showError('The device could not join this WiFi network. Check SSID and password, then return to setup.');
+          return;
+        }
+
+        if (data.wifi === 'connecting') {
+          statusTitle.textContent = 'Connecting to your WiFi…';
+          statusCopy.textContent = 'Waiting for DHCP to assign an IP address.';
+        } else {
+          statusTitle.textContent = 'Waiting for the WiFi join to complete…';
+          statusCopy.textContent = 'The device is still negotiating the connection.';
+        }
+      } catch (e) {
+        statusCopy.textContent = 'Waiting for the device to finish the handoff…';
+      }
+
+      setTimeout(pollStatus, 700);
+    }
+
+    pollStatus();
+  </script>
+</body>
+</html>

@@ -29,6 +29,19 @@ void wifi_init(void);
 // Returns the current WiFi state.
 wifi_status_t wifi_get_status(void);
 
+// Returns the current STA IPv4 address when one is assigned.
+bool wifi_get_sta_ip(char *buf, size_t len);
+
+// Returns true when the most recent join attempt failed with a config-related error.
+bool wifi_get_error_latched(void);
+
+// Arms the temporary AP handoff grace window used by the web UI.
+// Returns true when the AP is active and auto-managed, so the next successful join should delay AP shutdown briefly.
+bool wifi_arm_ap_handoff(void);
+
+// Completes an in-progress AP handoff and closes the auto-managed AP immediately.
+void wifi_complete_ap_handoff(void);
+
 // Registers a callback invoked whenever the WiFi connection status changes.
 void wifi_set_status_callback(wifi_status_cb_t cb);
 

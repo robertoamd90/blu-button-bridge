@@ -18,18 +18,29 @@
 #include "lwip/sockets.h"
 
 static const char *TAG = "wifi";
+static const TickType_t AP_HANDOFF_TIMEOUT_TICKS = pdMS_TO_TICKS(15000);
+static const uint32_t WIFI_WORK_RECONNECT        = (1U << 0);
+static const uint32_t WIFI_WORK_AP_HANDOFF_CLOSE = (1U << 1);
 
 static volatile wifi_status_t s_status = WIFI_STATUS_NOT_CONFIG;
 static wifi_status_cb_t     s_status_cb = NULL;
 static wifi_ap_status_cb_t  s_ap_status_cb = NULL;
 static TimerHandle_t        s_reconnect_timer = NULL;
+static TimerHandle_t        s_ap_handoff_timer = NULL;
 static volatile bool        s_ap_active = false;
+static volatile bool        s_ap_handoff_armed = false;
+static volatile bool        s_error_latched = false;
 static volatile bool        s_manual_reconfig_in_progress = false;
+static TaskHandle_t         s_worker_task_handle = NULL;
 static TaskHandle_t         s_dns_task_handle = NULL;
 static esp_netif_t         *s_sta_netif = NULL;
 
 static void set_status(wifi_status_t status);
 static void notify_ap_status(void);
+static void clear_ap_handoff(void);
+static void queue_wifi_work(uint32_t work_bits);
+static void wifi_worker_task(void *arg);
+static void ap_handoff_timer_cb(TimerHandle_t t);
 static bool wifi_reason_is_config_error(wifi_err_reason_t reason);
 static bool load_credentials(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
 static bool wifi_apply_sta_config_and_connect(const char *ssid, const char *pass);
@@ -48,6 +59,18 @@ static wifi_ap_settings_t s_ap_cfg = {
 static void set_status(wifi_status_t status)
 {
     if (s_status == status) return;
+    switch (status) {
+        case WIFI_STATUS_UP:
+        case WIFI_STATUS_NOT_CONFIG:
+        case WIFI_STATUS_DISABLED:
+            s_error_latched = false;
+            break;
+        case WIFI_STATUS_ERROR:
+            s_error_latched = true;
+            break;
+        default:
+            break;
+    }
     s_status = status;
     if (s_status_cb) {
         s_status_cb(status);
@@ -61,6 +84,53 @@ static void notify_ap_status(void)
     }
 }
 
+static void clear_ap_handoff(void)
+{
+    s_ap_handoff_armed = false;
+    if (s_ap_handoff_timer) {
+        xTimerStop(s_ap_handoff_timer, 0);
+    }
+}
+
+static void queue_wifi_work(uint32_t work_bits)
+{
+    if (!s_worker_task_handle) {
+        return;
+    }
+
+    xTaskNotify(s_worker_task_handle, work_bits, eSetBits);
+}
+
+static void wifi_worker_task(void *arg)
+{
+    (void)arg;
+
+    while (true) {
+        uint32_t work_bits = 0;
+        xTaskNotifyWait(0, 0xFFFFFFFFu, &work_bits, portMAX_DELAY);
+
+        if (work_bits & WIFI_WORK_RECONNECT) {
+            if (!s_manual_reconfig_in_progress &&
+                    (s_status == WIFI_STATUS_CONNECTING || s_status == WIFI_STATUS_ERROR)) {
+                set_status(WIFI_STATUS_CONNECTING);
+                esp_wifi_connect();
+            }
+        }
+
+        if (work_bits & WIFI_WORK_AP_HANDOFF_CLOSE) {
+            if (!s_ap_handoff_armed) {
+                continue;
+            }
+
+            s_ap_handoff_armed = false;
+            if (s_ap_active && !s_ap_cfg.enabled && s_status == WIFI_STATUS_UP) {
+                ESP_LOGI(TAG, "closing AP after WiFi handoff timeout");
+                wifi_stop_ap();
+            }
+        }
+    }
+}
+
 static void on_wifi_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -71,21 +141,30 @@ static void on_wifi_got_ip(void *arg, esp_event_base_t base, int32_t id, void *d
     xTimerStop(s_reconnect_timer, 0);
     ESP_LOGI(TAG, "IP: " IPSTR, IP2STR(&event->ip_info.ip));
     if (s_ap_active && !s_ap_cfg.enabled) {
-        wifi_stop_ap();
+        if (s_ap_handoff_armed) {
+            if (s_ap_handoff_timer && xTimerChangePeriod(s_ap_handoff_timer, AP_HANDOFF_TIMEOUT_TICKS, 0) == pdPASS) {
+                ESP_LOGI(TAG, "keeping AP up briefly for WiFi handoff page");
+            } else {
+                ESP_LOGW(TAG, "failed to start AP handoff timer, stopping AP immediately");
+                clear_ap_handoff();
+                wifi_stop_ap();
+            }
+        } else {
+            wifi_stop_ap();
+        }
     }
+}
+
+static void ap_handoff_timer_cb(TimerHandle_t t)
+{
+    (void)t;
+    queue_wifi_work(WIFI_WORK_AP_HANDOFF_CLOSE);
 }
 
 static void reconnect_timer_cb(TimerHandle_t t)
 {
     (void)t;
-    if (s_manual_reconfig_in_progress) {
-        return;
-    }
-
-    if (s_status == WIFI_STATUS_CONNECTING || s_status == WIFI_STATUS_ERROR) {
-        set_status(WIFI_STATUS_CONNECTING);
-        esp_wifi_connect();
-    }
+    queue_wifi_work(WIFI_WORK_RECONNECT);
 }
 
 static void on_wifi_disconnected(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -98,6 +177,9 @@ static void on_wifi_disconnected(void *arg, esp_event_base_t base, int32_t id, v
     if (s_manual_reconfig_in_progress) {
         return;
     }
+
+    ESP_LOGI(TAG, "disconnected from WiFi (reason %d)", event->reason);
+    clear_ap_handoff();
 
     if (s_status != WIFI_STATUS_DISABLED && s_status != WIFI_STATUS_NOT_CONFIG) {
         if (!event || (event->reason != WIFI_REASON_ASSOC_LEAVE &&
@@ -139,12 +221,25 @@ static bool wifi_reason_is_config_error(wifi_err_reason_t reason)
         case WIFI_REASON_AUTH_FAIL:
         case WIFI_REASON_AUTH_EXPIRE:
         case WIFI_REASON_ASSOC_FAIL:
+        case WIFI_REASON_IE_INVALID:
         case WIFI_REASON_HANDSHAKE_TIMEOUT:
         case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_IE_IN_4WAY_DIFFERS:
+        case WIFI_REASON_GROUP_CIPHER_INVALID:
+        case WIFI_REASON_PAIRWISE_CIPHER_INVALID:
+        case WIFI_REASON_AKMP_INVALID:
+        case WIFI_REASON_UNSUPP_RSN_IE_VERSION:
+        case WIFI_REASON_INVALID_RSN_IE_CAP:
+        case WIFI_REASON_802_1X_AUTH_FAILED:
+        case WIFI_REASON_CIPHER_SUITE_REJECTED:
+        case WIFI_REASON_BAD_CIPHER_OR_AKM:
+        case WIFI_REASON_NOT_AUTHORIZED_THIS_LOCATION:
         case WIFI_REASON_NO_AP_FOUND:
         case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
         case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+        case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
         case WIFI_REASON_ASSOC_NOT_AUTHED:
+        case WIFI_REASON_CONNECTION_FAIL:
             return true;
         default:
             return false;
@@ -221,6 +316,7 @@ static void set_device_hostname(void)
 static void wifi_connect(const char *ssid, const char *pass)
 {
     xTimerStop(s_reconnect_timer, 0);
+    s_error_latched = false;
     set_status(WIFI_STATUS_CONNECTING);
     s_manual_reconfig_in_progress = true;
     esp_wifi_disconnect();
@@ -283,6 +379,53 @@ wifi_status_t wifi_get_status(void)
     return s_status;
 }
 
+bool wifi_get_sta_ip(char *buf, size_t len)
+{
+    if (!buf || len == 0 || !s_sta_netif) {
+        return false;
+    }
+
+    buf[0] = '\0';
+
+    esp_netif_ip_info_t ip_info = {0};
+    if (esp_netif_get_ip_info(s_sta_netif, &ip_info) != ESP_OK || ip_info.ip.addr == 0) {
+        return false;
+    }
+
+    snprintf(buf, len, IPSTR, IP2STR(&ip_info.ip));
+    return true;
+}
+
+bool wifi_get_error_latched(void)
+{
+    return s_error_latched;
+}
+
+bool wifi_arm_ap_handoff(void)
+{
+    clear_ap_handoff();
+
+    if (!s_ap_active || s_ap_cfg.enabled) {
+        return false;
+    }
+
+    s_ap_handoff_armed = true;
+    return true;
+}
+
+void wifi_complete_ap_handoff(void)
+{
+    if (!s_ap_handoff_armed) {
+        return;
+    }
+
+    clear_ap_handoff();
+    if (s_ap_active && !s_ap_cfg.enabled && s_status == WIFI_STATUS_UP) {
+        ESP_LOGI(TAG, "closing AP after WiFi handoff callback");
+        wifi_stop_ap();
+    }
+}
+
 void wifi_set_status_callback(wifi_status_cb_t cb)
 {
     s_status_cb = cb;
@@ -301,6 +444,7 @@ void wifi_set_ap_status_callback(wifi_ap_status_cb_t cb)
 
 void wifi_disconnect(void)
 {
+    clear_ap_handoff();
     s_manual_reconfig_in_progress = false;
     set_status(WIFI_STATUS_DISABLED);
     xTimerStop(s_reconnect_timer, 0);
@@ -309,6 +453,7 @@ void wifi_disconnect(void)
 
 void wifi_clean_credentials(void)
 {
+    clear_ap_handoff();
     s_manual_reconfig_in_progress = false;
     set_status(WIFI_STATUS_NOT_CONFIG);
     xTimerStop(s_reconnect_timer, 0);
@@ -337,7 +482,12 @@ void wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_start());
 
+    ESP_ERROR_CHECK(xTaskCreate(wifi_worker_task, "wifi_work", 4096, NULL, 5, &s_worker_task_handle) == pdPASS
+                    ? ESP_OK
+                    : ESP_ERR_NO_MEM);
     s_reconnect_timer = xTimerCreate("wifi_rc", pdMS_TO_TICKS(5000), pdFALSE, NULL, reconnect_timer_cb);
+    s_ap_handoff_timer = xTimerCreate("wifi_ap_handoff", AP_HANDOFF_TIMEOUT_TICKS, pdFALSE, NULL, ap_handoff_timer_cb);
+    ESP_ERROR_CHECK(s_ap_handoff_timer ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP,         on_wifi_got_ip,       NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_wifi_disconnected, NULL));
     gpio_manager_set_boot_ap_callback(wifi_start_ap);
@@ -433,6 +583,7 @@ void wifi_start_ap(void)
         s_ap_active = false;
         vTaskDelay(pdMS_TO_TICKS(200)); // DNS task exits within ~100ms
     }
+    clear_ap_handoff();
     s_ap_active = true;
     ble_access_scan_stop();
     esp_wifi_set_mode(WIFI_MODE_APSTA);
@@ -460,6 +611,7 @@ void wifi_start_ap(void)
 void wifi_stop_ap(void)
 {
     if (!s_ap_active) return;
+    clear_ap_handoff();
     s_ap_active = false; // signals DNS task to exit its loop
     esp_wifi_set_mode(WIFI_MODE_STA);
     ble_access_scan_start();

@@ -708,7 +708,11 @@
     }
     toast('toast-wifi', true, 'Connecting… (status bar will update)');
     try {
-      await api('/api/wifi/connect', 'POST', body);
+      const d = await api('/api/wifi/connect', 'POST', body);
+      if (d && d.handoff && d.redirect) {
+        location.href = d.redirect;
+        return;
+      }
     } catch(e) {
       toast('toast-wifi', true, 'Reconnecting… check status bar');
     }

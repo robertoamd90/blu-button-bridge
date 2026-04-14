@@ -9,6 +9,7 @@ All routes below require auth when HTTP Basic Auth is enabled.
 
 | Method | Endpoint | Notes |
 |--------|----------|-------|
+| `GET` | `/wifi-handoff` | Transitional handoff page shown after AP-based WiFi setup |
 | `GET` | `/api/console/stream` | SSE stream with backlog + live console lines |
 | `GET` | `/api/status` | Status snapshot; response shape documented here |
 | `GET` | `/api/wifi/config` | Response shape documented here |
@@ -17,6 +18,7 @@ All routes below require auth when HTTP Basic Auth is enabled.
 | `DELETE` | `/api/wifi` | Clear credentials and disconnect |
 | `POST` | `/api/ap/start` | `{"ok":true}` on success |
 | `POST` | `/api/ap/stop` | `{"ok":true}` on success |
+| `POST` | `/api/ap/handoff/complete` | Completes the temporary AP handoff and closes the auto-managed AP |
 | `GET` | `/api/ap/config` | Response shape documented here |
 | `POST` | `/api/ap/config` | JSON body; shape documented here |
 | `GET` | `/api/mqtt/config` | Response shape documented here |
@@ -92,14 +94,18 @@ Response shape:
 ```json
 {
   "wifi": "up|connecting|error|not config|...",
+  "wifi_error_latched": false,
   "mqtt": "up|connecting|error|not config|...",
   "ap": "up|down",
   "ble": "up|scanning|paused|...",
+  "sta_ip": "192.168.1.23",
   "fw_version": "1.3.1"
 }
 ```
 
 `fw_version` comes from `esp_app_get_description()->version`.
+`sta_ip` is present only when the STA interface currently has an IPv4 address.
+`wifi_error_latched` stays `true` after a config-related join failure until the next manual connect attempt, disconnect, credential erase, or successful join.
 
 ### `GET /api/system/update/check`
 
@@ -273,6 +279,26 @@ Request shape:
 
 Unset fields keep current values as base.
 
+### `POST /api/ap/handoff/complete`
+
+Request body:
+
+```json
+{}
+```
+
+Success response:
+
+```json
+{"ok":true}
+```
+
+Behavior:
+
+- this is used by `/wifi-handoff`
+- when the AP is auto-managed and a WiFi handoff is pending, it closes the AP immediately
+- when the AP is always on or no handoff is pending, it is a no-op
+
 ### `GET /api/wifi/config`
 
 Response shape:
@@ -297,6 +323,18 @@ Request shape:
 ```
 
 `ssid` is required. The connection attempt continues in background.
+
+Success response:
+
+```json
+{
+  "ok": true,
+  "handoff": true,
+  "redirect": "/wifi-handoff"
+}
+```
+
+`handoff` and `redirect` are present only when the request was started from the auto-managed setup AP and the UI should move to the handoff page.
 
 ### `GET /api/mqtt/config`
 
