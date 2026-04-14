@@ -261,7 +261,7 @@ When preparing a release:
 1. ensure the target branch is merged to `main`
 2. ensure the release commit is final
 3. create the local git tag
-4. run `idf.py reconfigure build`
+4. run `scripts/idf-target.sh <board> reconfigure build` for each release board profile
 5. verify the embedded firmware version matches the new tag
 6. push commit and tag
 7. create the GitHub release

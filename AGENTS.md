@@ -145,7 +145,7 @@ If tooling is unstable, say that explicitly instead of claiming review is comple
 
 - Follow [docs/WORKFLOW.md](docs/WORKFLOW.md) for the full release flow.
 - Create the local release tag before the final release build.
-- Run `idf.py reconfigure build` for the final release build.
+- Run final release builds through `scripts/idf-target.sh <board> reconfigure build` for each release board profile.
 - Release artifacts must include all board-specific OTA and full images.
 - Report SHA-256 for all released artifacts.
 - Keep `dist/` untracked unless explicitly requested otherwise.
