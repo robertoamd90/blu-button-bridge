@@ -38,6 +38,7 @@ static esp_netif_t         *s_sta_netif = NULL;
 static void set_status(wifi_status_t status);
 static void notify_ap_status(void);
 static void clear_ap_handoff(void);
+static bool ap_handoff_available(void);
 static void queue_wifi_work(uint32_t work_bits);
 static void wifi_worker_task(void *arg);
 static void ap_handoff_timer_cb(TimerHandle_t t);
@@ -90,6 +91,11 @@ static void clear_ap_handoff(void)
     if (s_ap_handoff_timer) {
         xTimerStop(s_ap_handoff_timer, 0);
     }
+}
+
+static bool ap_handoff_available(void)
+{
+    return s_ap_active && !s_ap_cfg.enabled;
 }
 
 static void queue_wifi_work(uint32_t work_bits)
@@ -287,7 +293,11 @@ static bool wifi_reload_credentials_and_connect(void)
 
     ESP_LOGI(TAG, "connecting to %s", ssid);
     set_status(WIFI_STATUS_CONNECTING);
-    return wifi_apply_sta_config_and_connect(ssid, pass);
+    bool started = wifi_apply_sta_config_and_connect(ssid, pass);
+    if (!started) {
+        set_status(WIFI_STATUS_ERROR);
+    }
+    return started;
 }
 
 static void set_device_hostname(void)
@@ -401,11 +411,16 @@ bool wifi_get_error_latched(void)
     return s_error_latched;
 }
 
+bool wifi_should_offer_ap_handoff(void)
+{
+    return ap_handoff_available();
+}
+
 bool wifi_arm_ap_handoff(void)
 {
     clear_ap_handoff();
 
-    if (!s_ap_active || s_ap_cfg.enabled) {
+    if (!ap_handoff_available()) {
         return false;
     }
 

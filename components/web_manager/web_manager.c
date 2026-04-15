@@ -497,7 +497,7 @@ static void wifi_connect_task(void *arg)
 {
     wifi_creds_t *c = (wifi_creds_t *)arg;
     if (c->handoff) {
-        wifi_arm_ap_handoff();
+        (void)wifi_arm_ap_handoff();
     }
     wifi_connect_api(c->ssid, c->pass, c->has_pass);
     free(c);
@@ -796,9 +796,7 @@ static esp_err_t handle_wifi_connect(httpd_req_t *req)
     strlcpy(c->ssid, ssid_item->valuestring, sizeof(c->ssid));
     strlcpy(c->pass, cJSON_IsString(pass_item) ? pass_item->valuestring : "", sizeof(c->pass));
     c->has_pass = cJSON_IsString(pass_item);
-    wifi_ap_settings_t ap_cfg;
-    wifi_ap_load_config(&ap_cfg);
-    c->handoff = wifi_ap_is_active() && !ap_cfg.enabled;
+    c->handoff = wifi_should_offer_ap_handoff();
     const bool handoff = c->handoff;
     cJSON_Delete(root);
 

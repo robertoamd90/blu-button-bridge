@@ -35,8 +35,11 @@ bool wifi_get_sta_ip(char *buf, size_t len);
 // Returns true when the most recent join attempt failed with a config-related error.
 bool wifi_get_error_latched(void);
 
+// Returns true when the AP is active and auto-managed, so the web UI can offer the temporary handoff page.
+bool wifi_should_offer_ap_handoff(void);
+
 // Arms the temporary AP handoff grace window used by the web UI.
-// Returns true when the AP is active and auto-managed, so the next successful join should delay AP shutdown briefly.
+// Returns true when the next successful join should delay AP shutdown briefly.
 bool wifi_arm_ap_handoff(void);
 
 // Completes an in-progress AP handoff and closes the auto-managed AP immediately.
