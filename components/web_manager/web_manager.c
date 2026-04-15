@@ -197,6 +197,114 @@ static bool auth_password_hash_copy(const char *input, char out[AUTH_HASH_HEX_LE
     return true;
 }
 
+static void auth_snapshot_config(auth_config_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (s_auth_mutex) xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    *out = s_auth_cfg;
+    if (s_auth_mutex) xSemaphoreGive(s_auth_mutex);
+}
+
+static cJSON *auth_backup_export(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return NULL;
+
+    cJSON *auth = cJSON_AddObjectToObject(root, "auth");
+    if (!auth) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+
+    auth_config_t cfg = {0};
+    auth_snapshot_config(&cfg);
+    if (!cJSON_AddBoolToObject(auth, "enabled", cfg.enabled) ||
+            !cJSON_AddStringToObject(auth, "username", cfg.username) ||
+            !cJSON_AddBoolToObject(auth, "password_set", cfg.password_set) ||
+            !cJSON_AddStringToObject(auth, "password_sha256", cfg.password_sha256)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    return root;
+}
+
+static esp_err_t auth_apply_config_candidate(const auth_config_t *next, const char **out_error)
+{
+    if (!next) return ESP_ERR_INVALID_ARG;
+    if (out_error) *out_error = NULL;
+
+    if (next->enabled && next->username[0] == '\0') {
+        if (out_error) *out_error = "username required when auth is enabled";
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (next->enabled && !auth_username_is_valid(next->username)) {
+        if (out_error) *out_error = "username cannot contain ':'";
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (next->enabled && !next->password_set) {
+        if (out_error) *out_error = "password required when auth is enabled";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    esp_err_t err = auth_save_config_locked(next);
+    if (err == ESP_OK) s_auth_cfg = *next;
+    xSemaphoreGive(s_auth_mutex);
+    if (err != ESP_OK && out_error) *out_error = "could not save auth config";
+    return err;
+}
+
+static esp_err_t auth_backup_import(const cJSON *root_obj, const char **out_error)
+{
+    cJSON *root = (cJSON *)root_obj;
+    cJSON *auth = cJSON_GetObjectItem(root, "auth");
+    if (!auth) return ESP_OK;
+
+    auth_config_t next = {0};
+    auth_snapshot_config(&next);
+
+    cJSON *enabled_item = cJSON_GetObjectItem(auth, "enabled");
+    cJSON *user_item = cJSON_GetObjectItem(auth, "username");
+    cJSON *password_set_item = cJSON_GetObjectItem(auth, "password_set");
+    cJSON *password_hash_item = cJSON_GetObjectItem(auth, "password_sha256");
+
+    if (cJSON_IsBool(enabled_item)) next.enabled = cJSON_IsTrue(enabled_item);
+    if (cJSON_IsString(user_item)) {
+        if (strlen(user_item->valuestring) > AUTH_USER_MAX ||
+                !auth_username_is_valid(user_item->valuestring)) {
+            if (out_error) *out_error = "invalid auth username in backup";
+            return ESP_ERR_INVALID_ARG;
+        }
+        strlcpy(next.username, user_item->valuestring, sizeof(next.username));
+    }
+    if (cJSON_IsString(password_hash_item)) {
+        if (password_hash_item->valuestring[0] == '\0') {
+            next.password_sha256[0] = '\0';
+            next.password_set = false;
+        } else if (!auth_password_hash_copy(password_hash_item->valuestring, next.password_sha256)) {
+            if (out_error) *out_error = "invalid auth password hash in backup";
+            return ESP_ERR_INVALID_ARG;
+        } else {
+            next.password_set = true;
+        }
+    } else if (cJSON_IsBool(password_set_item) && !cJSON_IsTrue(password_set_item)) {
+        next.password_sha256[0] = '\0';
+        next.password_set = false;
+    }
+
+    if (next.enabled && next.username[0] == '\0') {
+        if (out_error) *out_error = "backup enables auth without a username";
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (next.enabled && !next.password_set) {
+        if (out_error) *out_error = "backup enables auth without a password hash";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return auth_apply_config_candidate(&next, out_error);
+}
+
 static esp_err_t handle_with_auth(httpd_req_t *req)
 {
     route_ctx_t *ctx = (route_ctx_t *)req->user_ctx;
@@ -716,12 +824,8 @@ static esp_err_t handle_ap_handoff_complete(httpd_req_t *req)
 // GET /api/ap/config
 static esp_err_t handle_ap_config_get(httpd_req_t *req)
 {
-    wifi_ap_settings_t cfg;
-    wifi_ap_load_config(&cfg);
-    cJSON *obj = cJSON_CreateObject();
-    cJSON_AddBoolToObject  (obj, "enabled",  cfg.enabled);
-    cJSON_AddStringToObject(obj, "ssid",     cfg.ssid);
-    cJSON_AddStringToObject(obj, "password", cfg.password);
+    cJSON *obj = wifi_ap_config_export(WIFI_EXPORT_VIEW_FE);
+    if (!obj) return send_error(req, "could not read AP config");
     send_cjson(req, obj);
     return ESP_OK;
 }
@@ -753,7 +857,8 @@ static esp_err_t handle_ap_config_set(httpd_req_t *req)
     cJSON_Delete(root);
 
     bool was_active = wifi_ap_is_active();
-    wifi_ap_save_config(&cfg);
+    esp_err_t err = wifi_ap_save_config(&cfg);
+    if (err != ESP_OK) return send_error(req, "could not save AP config");
 
     if (cfg.enabled)
         wifi_start_ap(); // start or restart with new config
@@ -873,13 +978,8 @@ static esp_err_t handle_mqtt_delete(httpd_req_t *req)
 // GET /api/wifi/config
 static esp_err_t handle_wifi_config_get(httpd_req_t *req)
 {
-    char ssid[33] = {};
-    bool has_ssid = wifi_get_ssid(ssid, sizeof(ssid));
-    bool has_pass = wifi_get_password_set();
-    cJSON *obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(obj, "ssid",         ssid);
-    cJSON_AddBoolToObject  (obj, "ssid_set",     has_ssid);
-    cJSON_AddBoolToObject  (obj, "password_set", has_pass);
+    cJSON *obj = wifi_config_export(WIFI_EXPORT_VIEW_FE);
+    if (!obj) return send_error(req, "could not read WiFi config");
     send_cjson(req, obj);
     return ESP_OK;
 }
@@ -887,23 +987,14 @@ static esp_err_t handle_wifi_config_get(httpd_req_t *req)
 // GET /api/wifi/scan
 static esp_err_t handle_wifi_scan(httpd_req_t *req)
 {
-    wifi_scan_entry_t results[20];
-    int n = 0;
-    esp_err_t err = wifi_scan_get_results(results, 20, &n);
+    cJSON *arr = NULL;
+    esp_err_t err = wifi_scan_export(&arr);
     if (err == ESP_ERR_INVALID_STATE) {
         return send_error_status(req, "409 Conflict",
                                  "scan unavailable while WiFi is connecting");
     }
     if (err != ESP_OK) {
         return send_error(req, "scan failed");
-    }
-
-    cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < n; i++) {
-        cJSON *item = cJSON_CreateObject();
-        cJSON_AddStringToObject(item, "ssid", results[i].ssid);
-        cJSON_AddNumberToObject(item, "rssi", results[i].rssi);
-        cJSON_AddItemToArray(arr, item);
     }
     send_cjson(req, arr);
     return ESP_OK;
@@ -912,20 +1003,8 @@ static esp_err_t handle_wifi_scan(httpd_req_t *req)
 // GET /api/mqtt/config
 static esp_err_t handle_mqtt_config_get(httpd_req_t *req)
 {
-    char host[128] = {};
-    char user[64]  = {};
-    uint32_t port  = 1883;
-    bool use_tls   = false;
-    bool has_pass  = false;
-    bool ok = mqtt_get_saved_config(host, sizeof(host), &port,
-                                    user, sizeof(user), &use_tls, &has_pass);
-    cJSON *obj = cJSON_CreateObject();
-    cJSON_AddBoolToObject  (obj, "configured",   ok);
-    cJSON_AddStringToObject(obj, "host",         host);
-    cJSON_AddNumberToObject(obj, "port",         (double)port);
-    cJSON_AddStringToObject(obj, "username",     user);
-    cJSON_AddBoolToObject  (obj, "tls",          use_tls);
-    cJSON_AddBoolToObject  (obj, "password_set", has_pass);
+    cJSON *obj = mqtt_config_export(MQTT_EXPORT_VIEW_FE);
+    if (!obj) return send_error(req, "could not read MQTT config");
     send_cjson(req, obj);
     return ESP_OK;
 }
@@ -949,20 +1028,37 @@ static void factory_reset_task(void *arg)
     esp_restart();
 }
 
+static esp_err_t start_background_task(TaskFunction_t task_fn, const char *name)
+{
+    if (xTaskCreate(task_fn, name, 2048, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to start task '%s'", name);
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t send_ok_and_start_task(httpd_req_t *req,
+                                        TaskFunction_t task_fn,
+                                        const char *name,
+                                        const char *error)
+{
+    esp_err_t err = start_background_task(task_fn, name);
+    if (err != ESP_OK) return send_error(req, error);
+    send_json(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 // POST /api/system/reboot
 static esp_err_t handle_system_reboot(httpd_req_t *req)
 {
-    send_json(req, "{\"ok\":true}");
-    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
-    return ESP_OK;
+    return send_ok_and_start_task(req, reboot_task, "reboot", "could not schedule reboot");
 }
 
 // POST /api/system/factory-reset
 static esp_err_t handle_system_factory_reset(httpd_req_t *req)
 {
-    send_json(req, "{\"ok\":true}");
-    xTaskCreate(factory_reset_task, "factory_rst", 2048, NULL, 5, NULL);
-    return ESP_OK;
+    return send_ok_and_start_task(req, factory_reset_task, "factory_rst",
+                                  "could not schedule factory reset");
 }
 
 // GET /api/system/auth
@@ -996,9 +1092,7 @@ static esp_err_t handle_auth_config_set(httpd_req_t *req)
     cJSON *pass_item    = cJSON_GetObjectItem(root, "password");
 
     auth_config_t next = {0};
-    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-    next = s_auth_cfg;
-    xSemaphoreGive(s_auth_mutex);
+    auth_snapshot_config(&next);
 
     if (cJSON_IsBool(enabled_item))
         next.enabled = cJSON_IsTrue(enabled_item);
@@ -1030,18 +1124,9 @@ static esp_err_t handle_auth_config_set(httpd_req_t *req)
     }
     cJSON_Delete(root);
 
-    if (next.enabled && next.username[0] == '\0')
-        return send_error(req, "username required when auth is enabled");
-    if (next.enabled && !auth_username_is_valid(next.username))
-        return send_error(req, "username cannot contain ':'");
-    if (next.enabled && !next.password_set)
-        return send_error(req, "password required when auth is enabled");
-
-    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-    esp_err_t err = auth_save_config_locked(&next);
-    if (err == ESP_OK) s_auth_cfg = next;
-    xSemaphoreGive(s_auth_mutex);
-    if (err != ESP_OK) return send_error(req, "could not save auth config");
+    const char *error = NULL;
+    esp_err_t err = auth_apply_config_candidate(&next, &error);
+    if (err != ESP_OK) return send_error(req, error ? error : "could not save auth config");
 
     send_json(req, "{\"ok\":true}");
     return ESP_OK;
@@ -1049,51 +1134,13 @@ static esp_err_t handle_auth_config_set(httpd_req_t *req)
 
 // ── BLE access handlers ───────────────────────────────────────────────────────
 
-// Format MAC (NimBLE little-endian) → "AA:BB:CC:DD:EE:FF" (MSB first, standard notation)
-static void mac_to_str(const uint8_t mac[6], char *out)
-{
-    snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
-             mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
-}
-
-// Parse "AA:BB:CC:DD:EE:FF" → NimBLE little-endian (mac[0]=LSB)
-static bool mac_from_str(const char *str, uint8_t mac[6])
-{
-    unsigned int b[6];
-    if (sscanf(str, "%02X:%02X:%02X:%02X:%02X:%02X",
-               &b[5], &b[4], &b[3], &b[2], &b[1], &b[0]) != 6) return false;
-    for (int i = 0; i < 6; i++) mac[i] = (uint8_t)b[i];
-    return true;
-}
-
-static bool key_from_str(const char *str, uint8_t key[16])
-{
-    if (strlen(str) != 32) return false;
-    for (int i = 0; i < 16; i++) {
-        unsigned int byte;
-        if (sscanf(str + i * 2, "%02X", &byte) != 1) return false;
-        if (key) key[i] = (uint8_t)byte;
-    }
-    return true;
-}
-
 // ── MQTT action handlers ──────────────────────────────────────────────────────
 
 // GET /api/mqtt/actions
 static esp_err_t handle_mqtt_actions_get(httpd_req_t *req)
 {
-    cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < MQTT_MAX_ACTIONS; i++) {
-        mqtt_action_t a;
-        if (mqtt_action_get(i, &a) == ESP_OK) {
-            cJSON *obj = cJSON_CreateObject();
-            cJSON_AddNumberToObject(obj, "idx",     i);
-            cJSON_AddStringToObject(obj, "name",    a.name);
-            cJSON_AddStringToObject(obj, "topic",   a.topic);
-            cJSON_AddStringToObject(obj, "payload", a.payload);
-            cJSON_AddItemToArray(arr, obj);
-        }
-    }
+    cJSON *arr = mqtt_actions_export();
+    if (!arr) return send_error(req, "could not read MQTT actions");
     send_cjson(req, arr);
     return ESP_OK;
 }
@@ -1206,21 +1253,8 @@ static esp_err_t handle_mqtt_action_delete(httpd_req_t *req)
 // GET /api/gpio/actions
 static esp_err_t handle_gpio_actions_get(httpd_req_t *req)
 {
-    cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < GPIO_ACTION_MAX; i++) {
-        gpio_action_t a;
-        if (gpio_action_get(i, &a) == ESP_OK) {
-            cJSON *obj = cJSON_CreateObject();
-            cJSON_AddNumberToObject(obj, "idx", i);
-            cJSON_AddStringToObject(obj, "name", a.name);
-            cJSON_AddNumberToObject(obj, "gpio", a.gpio_num);
-            cJSON_AddBoolToObject(obj, "idle_on", a.idle_on);
-            cJSON_AddBoolToObject(obj, "active_low", a.active_low);
-            cJSON_AddStringToObject(obj, "action", gpio_action_kind_str((gpio_action_kind_t)a.action));
-            cJSON_AddNumberToObject(obj, "restore_delay_ms", a.restore_delay_ms);
-            cJSON_AddItemToArray(arr, obj);
-        }
-    }
+    cJSON *arr = gpio_actions_export();
+    if (!arr) return send_error(req, "could not read GPIO actions");
     send_cjson(req, arr);
     return ESP_OK;
 }
@@ -1228,12 +1262,8 @@ static esp_err_t handle_gpio_actions_get(httpd_req_t *req)
 // GET /api/gpio/pins
 static esp_err_t handle_gpio_pins_get(httpd_req_t *req)
 {
-    uint8_t gpios[16];
-    int n = gpio_action_get_allowed_gpios(gpios, 16);
-    cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < n; i++) {
-        cJSON_AddItemToArray(arr, cJSON_CreateNumber(gpios[i]));
-    }
+    cJSON *arr = gpio_pins_export();
+    if (!arr) return send_error(req, "could not read GPIO pins");
     send_cjson(req, arr);
     return ESP_OK;
 }
@@ -1383,136 +1413,11 @@ static esp_err_t handle_gpio_action_delete(httpd_req_t *req)
     return ESP_OK;
 }
 
-static void ble_json_add_action_map(cJSON *parent, const ble_button_action_map_t *map)
-{
-    if (!parent || !map) return;
-    cJSON_AddNumberToObject(parent, "single_press", map->single_press);
-    cJSON_AddNumberToObject(parent, "double_press", map->double_press);
-    cJSON_AddNumberToObject(parent, "triple_press", map->triple_press);
-    cJSON_AddNumberToObject(parent, "long_press", map->long_press);
-}
-
-static void ble_fill_action_map_from_json(cJSON *obj, ble_button_action_map_t *out)
-{
-    if (!out) return;
-    memset(out, 0, sizeof(*out));
-    if (!obj || !cJSON_IsObject(obj)) return;
-
-    cJSON *sp = cJSON_GetObjectItem(obj, "single_press");
-    cJSON *dp = cJSON_GetObjectItem(obj, "double_press");
-    cJSON *tp = cJSON_GetObjectItem(obj, "triple_press");
-    cJSON *lp = cJSON_GetObjectItem(obj, "long_press");
-    out->single_press = cJSON_IsNumber(sp) ? (uint16_t)sp->valuedouble : 0;
-    out->double_press = cJSON_IsNumber(dp) ? (uint16_t)dp->valuedouble : 0;
-    out->triple_press = cJSON_IsNumber(tp) ? (uint16_t)tp->valuedouble : 0;
-    out->long_press   = cJSON_IsNumber(lp) ? (uint16_t)lp->valuedouble : 0;
-}
-
-static bool ble_parse_button_configs(cJSON *buttons_item,
-                                     uint8_t button_count,
-                                     ble_button_config_t out_buttons[BLE_ACCESS_MAX_BUTTONS],
-                                     const char **out_error)
-{
-    if (out_error) *out_error = "invalid button config";
-    if (!cJSON_IsArray(buttons_item)) {
-        if (out_error) *out_error = "buttons array required";
-        return false;
-    }
-
-    memset(out_buttons, 0, sizeof(ble_button_config_t) * BLE_ACCESS_MAX_BUTTONS);
-    uint8_t seen_mask = 0;
-    cJSON *item;
-    cJSON_ArrayForEach(item, buttons_item) {
-        cJSON *idx_item = cJSON_GetObjectItem(item, "idx");
-        if (!cJSON_IsNumber(idx_item)) {
-            if (out_error) *out_error = "button idx required";
-            return false;
-        }
-
-        int idx = (int)idx_item->valuedouble;
-        if (idx < 0 || idx >= button_count || idx >= BLE_ACCESS_MAX_BUTTONS) {
-            if (out_error) *out_error = "button idx out of range";
-            return false;
-        }
-
-        uint8_t bit = (uint8_t)(1u << idx);
-        if (seen_mask & bit) {
-            if (out_error) *out_error = "duplicate button idx";
-            return false;
-        }
-        seen_mask |= bit;
-
-        cJSON *mqtt_item = cJSON_GetObjectItem(item, "mqtt");
-        cJSON *gpio_item = cJSON_GetObjectItem(item, "gpio");
-        if (mqtt_item && !cJSON_IsObject(mqtt_item)) {
-            if (out_error) *out_error = "button mqtt config must be an object";
-            return false;
-        }
-        if (gpio_item && !cJSON_IsObject(gpio_item)) {
-            if (out_error) *out_error = "button gpio config must be an object";
-            return false;
-        }
-
-        ble_fill_action_map_from_json(mqtt_item, &out_buttons[idx].mqtt);
-        ble_fill_action_map_from_json(gpio_item, &out_buttons[idx].gpio);
-    }
-
-    return true;
-}
-
 // GET /api/ble/devices
 static esp_err_t handle_ble_devices(httpd_req_t *req)
 {
-    ble_device_t devs[BLE_ACCESS_MAX_DEVICES];
-    int n = ble_access_get_devices(devs, BLE_ACCESS_MAX_DEVICES);
-    cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < n; i++) {
-        ble_device_t *d = &devs[i];
-        ble_device_telemetry_t telemetry = {0};
-        char mac_str[18];
-        mac_to_str(d->mac, mac_str);
-        ble_access_get_device_telemetry(d->mac, &telemetry);
-        cJSON *obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(obj, "mac",              mac_str);
-        cJSON_AddStringToObject(obj, "label",            d->label);
-        cJSON_AddBoolToObject  (obj, "enabled",          d->enabled);
-        cJSON_AddNumberToObject(obj, "button_count",     d->button_count);
-        cJSON_AddBoolToObject  (obj, "key_import_error", ble_access_has_key_import_error(d->mac));
-        cJSON_AddBoolToObject  (obj, "decrypt_error",    ble_access_has_decrypt_error(d->mac));
-        if (telemetry.has_battery_percent)
-            cJSON_AddNumberToObject(obj, "battery_percent", telemetry.battery_percent);
-        else
-            cJSON_AddNullToObject(obj, "battery_percent");
-        if (telemetry.has_last_seen)
-            cJSON_AddNumberToObject(obj, "last_seen_age_s", telemetry.last_seen_age_s);
-        else
-            cJSON_AddNullToObject(obj, "last_seen_age_s");
-
-        cJSON *buttons = cJSON_AddArrayToObject(obj, "buttons");
-        for (uint8_t button_idx = 0;
-             button_idx < d->button_count && button_idx < BLE_ACCESS_MAX_BUTTONS;
-             button_idx++) {
-            cJSON *button = cJSON_CreateObject();
-            cJSON_AddNumberToObject(button, "idx", button_idx);
-            if (telemetry.buttons[button_idx].has_last_event)
-                cJSON_AddStringToObject(button, "last_event",
-                                        ble_button_event_str(telemetry.buttons[button_idx].last_event));
-            else
-                cJSON_AddNullToObject(button, "last_event");
-            if (telemetry.buttons[button_idx].has_last_event)
-                cJSON_AddNumberToObject(button, "last_event_age_s",
-                                        telemetry.buttons[button_idx].last_event_age_s);
-            else
-                cJSON_AddNullToObject(button, "last_event_age_s");
-
-            cJSON *mqtt = cJSON_AddObjectToObject(button, "mqtt");
-            cJSON *gpio = cJSON_AddObjectToObject(button, "gpio");
-            ble_json_add_action_map(mqtt, &d->buttons[button_idx].mqtt);
-            ble_json_add_action_map(gpio, &d->buttons[button_idx].gpio);
-            cJSON_AddItemToArray(buttons, button);
-        }
-        cJSON_AddItemToArray(arr, obj);
-    }
+    cJSON *arr = ble_access_devices_export(BLE_ACCESS_EXPORT_VIEW_FE);
+    if (!arr) return send_error(req, "could not read BLE devices");
     send_cjson(req, arr);
     return ESP_OK;
 }
@@ -1520,17 +1425,8 @@ static esp_err_t handle_ble_devices(httpd_req_t *req)
 // GET /api/ble/register/status
 static esp_err_t handle_ble_reg_status(httpd_req_t *req)
 {
-    cJSON *obj = cJSON_CreateObject();
-    bool registering = ble_access_is_registering();
-    cJSON_AddBoolToObject(obj, "registering", registering);
-    uint8_t pending_mac[6];
-    if (ble_access_has_pending_mac(pending_mac)) {
-        char mac_str[18];
-        mac_to_str(pending_mac, mac_str);
-        cJSON_AddStringToObject(obj, "pending_mac", mac_str);
-    } else {
-        cJSON_AddNullToObject(obj, "pending_mac");
-    }
+    cJSON *obj = ble_access_registration_status_export();
+    if (!obj) return send_error(req, "could not read BLE registration status");
     send_cjson(req, obj);
     return ESP_OK;
 }
@@ -1571,11 +1467,11 @@ static esp_err_t handle_ble_reg_confirm(httpd_req_t *req)
     }
 
     uint8_t mac[6], key[16];
-    if (!mac_from_str(mac_item->valuestring, mac)) {
+    if (!ble_access_mac_from_str(mac_item->valuestring, mac)) {
         cJSON_Delete(root);
         return send_error(req, "invalid mac");
     }
-    if (!key_from_str(key_item->valuestring, key)) {
+    if (!ble_access_key_from_str(key_item->valuestring, key)) {
         cJSON_Delete(root);
         return send_error(req, "key must be 32 hex chars");
     }
@@ -1612,7 +1508,7 @@ static esp_err_t handle_ble_device_update(httpd_req_t *req)
     if (!cJSON_IsString(mac_item)) { cJSON_Delete(root); return send_error(req, "mac required"); }
 
     uint8_t mac[6];
-    if (!mac_from_str(mac_item->valuestring, mac)) {
+    if (!ble_access_mac_from_str(mac_item->valuestring, mac)) {
         cJSON_Delete(root);
         return send_error(req, "invalid mac");
     }
@@ -1634,8 +1530,8 @@ static esp_err_t handle_ble_device_update(httpd_req_t *req)
     if (buttons_item) {
         const char *buttons_error = NULL;
         ble_button_config_t next_buttons[BLE_ACCESS_MAX_BUTTONS];
-        if (!ble_parse_button_configs(buttons_item, current.button_count,
-                                      next_buttons, &buttons_error)) {
+        if (!ble_access_parse_button_configs_json(buttons_item, current.button_count,
+                                                  next_buttons, &buttons_error)) {
             cJSON_Delete(root);
             return send_error(req, buttons_error ? buttons_error : "invalid buttons payload");
         }
@@ -1644,7 +1540,7 @@ static esp_err_t handle_ble_device_update(httpd_req_t *req)
 
     if (cJSON_IsString(key_item) &&
             strlen(key_item->valuestring) > 0 &&
-            !key_from_str(key_item->valuestring, NULL)) {
+            !ble_access_key_from_str(key_item->valuestring, NULL)) {
         cJSON_Delete(root);
         return send_error(req, "key must be 32 hex chars");
     }
@@ -1653,7 +1549,7 @@ static esp_err_t handle_ble_device_update(httpd_req_t *req)
     uint8_t new_key[16];
     bool has_new_key = cJSON_IsString(key_item) &&
                        strlen(key_item->valuestring) > 0 &&
-                       key_from_str(key_item->valuestring, new_key);
+                       ble_access_key_from_str(key_item->valuestring, new_key);
     cJSON_Delete(root);
 
     esp_err_t err = ble_access_device_update(mac, &current);
@@ -1683,7 +1579,7 @@ static esp_err_t handle_ble_device_reimport(httpd_req_t *req)
     if (!cJSON_IsString(mac_item)) { cJSON_Delete(root); return send_error(req, "mac required"); }
 
     uint8_t mac[6];
-    if (!mac_from_str(mac_item->valuestring, mac)) {
+    if (!ble_access_mac_from_str(mac_item->valuestring, mac)) {
         cJSON_Delete(root);
         return send_error(req, "invalid mac");
     }
@@ -1711,7 +1607,7 @@ static esp_err_t handle_ble_device_delete(httpd_req_t *req)
     if (!cJSON_IsString(mac_item)) { cJSON_Delete(root); return send_error(req, "mac required"); }
 
     uint8_t mac[6];
-    if (!mac_from_str(mac_item->valuestring, mac)) {
+    if (!ble_access_mac_from_str(mac_item->valuestring, mac)) {
         cJSON_Delete(root);
         return send_error(req, "invalid mac");
     }
@@ -1819,9 +1715,7 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
     }
 
     ota_unlock();
-    send_json(req, "{\"ok\":true}");
-    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
-    return ESP_OK;
+    return send_ok_and_start_task(req, reboot_task, "reboot", "could not schedule reboot");
 }
 
 static esp_err_t handle_update_install(httpd_req_t *req)
@@ -1845,143 +1739,100 @@ static esp_err_t handle_update_install(httpd_req_t *req)
     ota_unlock();
     if (err != ESP_OK) return send_error(req, "could not stage GitHub OTA");
 
-    send_json(req, "{\"ok\":true}");
-    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
-    return ESP_OK;
+    return send_ok_and_start_task(req, reboot_task, "reboot", "could not schedule reboot");
 }
 
 // ── Config backup / restore ──────────────────────────────────────────────────
 
+static bool take_export_item(cJSON *dst, cJSON *src, const char *key)
+{
+    if (!dst || !src || !key) return false;
+    cJSON *item = cJSON_DetachItemFromObjectCaseSensitive(src, key);
+    if (!item) return false;
+    if (!cJSON_AddItemToObject(dst, key, item)) {
+        cJSON_Delete(item);
+        return false;
+    }
+    return true;
+}
+
+static cJSON *build_config_backup_root(const char **out_error)
+{
+    if (out_error) *out_error = NULL;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *wifi = NULL;
+    cJSON *auth = NULL;
+    cJSON *mqtt = NULL;
+    cJSON *gpio = NULL;
+    cJSON *ble = NULL;
+    if (!root) return NULL;
+    if (!cJSON_AddNumberToObject(root, "version", 3)) goto json_fail;
+
+    wifi = wifi_backup_export();
+    if (!wifi) {
+        if (out_error) *out_error = "could not export WiFi config";
+        goto fail;
+    }
+    if (!take_export_item(root, wifi, "wifi") || !take_export_item(root, wifi, "ap")) {
+        goto json_fail;
+    }
+
+    auth = auth_backup_export();
+    if (!auth) {
+        if (out_error) *out_error = "could not export auth config";
+        goto fail;
+    }
+    if (!take_export_item(root, auth, "auth")) goto json_fail;
+
+    mqtt = mqtt_backup_export();
+    if (!mqtt) {
+        if (out_error) *out_error = "could not export MQTT config";
+        goto fail;
+    }
+    if (!take_export_item(root, mqtt, "mqtt") || !take_export_item(root, mqtt, "mqtt_actions")) {
+        goto json_fail;
+    }
+
+    gpio = gpio_backup_export();
+    if (!gpio) {
+        if (out_error) *out_error = "could not export GPIO config";
+        goto fail;
+    }
+    if (!take_export_item(root, gpio, "gpio_actions")) goto json_fail;
+
+    ble = ble_access_backup_export();
+    if (!ble) {
+        if (out_error) *out_error = "could not export BLE config";
+        goto fail;
+    }
+    if (!take_export_item(root, ble, "ble_devices")) goto json_fail;
+
+    cJSON_Delete(wifi);
+    cJSON_Delete(auth);
+    cJSON_Delete(mqtt);
+    cJSON_Delete(gpio);
+    cJSON_Delete(ble);
+    return root;
+
+json_fail:
+    if (out_error) *out_error = "json error";
+fail:
+    cJSON_Delete(wifi);
+    cJSON_Delete(auth);
+    cJSON_Delete(mqtt);
+    cJSON_Delete(gpio);
+    cJSON_Delete(ble);
+    cJSON_Delete(root);
+    return NULL;
+}
+
 // GET /api/system/config
 static esp_err_t handle_config_download(httpd_req_t *req)
 {
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "version", 3);
-
-    // WiFi STA
-    cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
-    {
-        char ssid[33] = {0}, pass[65] = {0};
-        nvs_handle_t h;
-        if (nvs_open("wifi", NVS_READONLY, &h) == ESP_OK) {
-            size_t len = sizeof(ssid);
-            nvs_get_str(h, "ssid", ssid, &len);
-            len = sizeof(pass);
-            nvs_get_str(h, "pass", pass, &len);
-            nvs_close(h);
-        }
-        cJSON_AddStringToObject(wifi, "ssid", ssid);
-        cJSON_AddStringToObject(wifi, "password", pass);
-    }
-
-    // AP
-    cJSON *ap = cJSON_AddObjectToObject(root, "ap");
-    {
-        wifi_ap_settings_t cfg;
-        wifi_ap_load_config(&cfg);
-        cJSON_AddBoolToObject(ap, "enabled", cfg.enabled);
-        cJSON_AddStringToObject(ap, "ssid", cfg.ssid);
-        cJSON_AddStringToObject(ap, "password", cfg.password);
-    }
-
-    // HTTP Basic Auth
-    cJSON *auth = cJSON_AddObjectToObject(root, "auth");
-    {
-        auth_config_t cfg = {0};
-        if (s_auth_mutex) xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-        cfg = s_auth_cfg;
-        if (s_auth_mutex) xSemaphoreGive(s_auth_mutex);
-        cJSON_AddBoolToObject(auth, "enabled", cfg.enabled);
-        cJSON_AddStringToObject(auth, "username", cfg.username);
-        cJSON_AddBoolToObject(auth, "password_set", cfg.password_set);
-        cJSON_AddStringToObject(auth, "password_sha256", cfg.password_sha256);
-    }
-
-    // MQTT broker
-    cJSON *mqtt = cJSON_AddObjectToObject(root, "mqtt");
-    {
-        char host[128] = {0}, user[64] = {0}, pass[64] = {0};
-        char port_s[8] = {0}, tls_s[4] = {0};
-        nvs_handle_t h;
-        if (nvs_open("mqtt", NVS_READONLY, &h) == ESP_OK) {
-            size_t len;
-            len = sizeof(host);  nvs_get_str(h, "host", host, &len);
-            len = sizeof(port_s); nvs_get_str(h, "port", port_s, &len);
-            len = sizeof(user);  nvs_get_str(h, "user", user, &len);
-            len = sizeof(pass);  nvs_get_str(h, "pass", pass, &len);
-            len = sizeof(tls_s); nvs_get_str(h, "tls", tls_s, &len);
-            nvs_close(h);
-        }
-        cJSON_AddStringToObject(mqtt, "host", host);
-        cJSON_AddNumberToObject(mqtt, "port", atoi(port_s));
-        cJSON_AddStringToObject(mqtt, "username", user);
-        cJSON_AddStringToObject(mqtt, "password", pass);
-        cJSON_AddBoolToObject(mqtt, "tls", strcmp(tls_s, "1") == 0);
-    }
-
-    // MQTT actions
-    cJSON *ma = cJSON_AddArrayToObject(root, "mqtt_actions");
-    for (int i = 0; i < MQTT_MAX_ACTIONS; i++) {
-        mqtt_action_t a;
-        if (mqtt_action_get(i, &a) == ESP_OK) {
-            cJSON *o = cJSON_CreateObject();
-            cJSON_AddNumberToObject(o, "idx", i);
-            cJSON_AddStringToObject(o, "name", a.name);
-            cJSON_AddStringToObject(o, "topic", a.topic);
-            cJSON_AddStringToObject(o, "payload", a.payload);
-            cJSON_AddItemToArray(ma, o);
-        }
-    }
-
-    // GPIO actions
-    cJSON *ga = cJSON_AddArrayToObject(root, "gpio_actions");
-    for (int i = 0; i < GPIO_ACTION_MAX; i++) {
-        gpio_action_t a;
-        if (gpio_action_get(i, &a) == ESP_OK) {
-            cJSON *o = cJSON_CreateObject();
-            cJSON_AddNumberToObject(o, "idx", i);
-            cJSON_AddStringToObject(o, "name", a.name);
-            cJSON_AddNumberToObject(o, "gpio", a.gpio_num);
-            cJSON_AddBoolToObject(o, "idle_on", a.idle_on);
-            cJSON_AddBoolToObject(o, "active_low", a.active_low);
-            cJSON_AddStringToObject(o, "action", gpio_action_kind_str((gpio_action_kind_t)a.action));
-            cJSON_AddNumberToObject(o, "restore_delay_ms", a.restore_delay_ms);
-            cJSON_AddItemToArray(ga, o);
-        }
-    }
-
-    // BLE devices
-    cJSON *ba = cJSON_AddArrayToObject(root, "ble_devices");
-    {
-        ble_device_t devs[BLE_ACCESS_MAX_DEVICES];
-        int n = ble_access_get_devices(devs, BLE_ACCESS_MAX_DEVICES);
-        for (int i = 0; i < n; i++) {
-            cJSON *o = cJSON_CreateObject();
-            char ms[18];
-            mac_to_str(devs[i].mac, ms);
-            cJSON_AddStringToObject(o, "mac", ms);
-            char kh[33];
-            for (int k = 0; k < 16; k++) snprintf(kh + k * 2, 3, "%02X", devs[i].key[k]);
-            cJSON_AddStringToObject(o, "key", kh);
-            cJSON_AddStringToObject(o, "label", devs[i].label);
-            cJSON_AddBoolToObject(o, "enabled", devs[i].enabled);
-            cJSON_AddNumberToObject(o, "last_counter", devs[i].last_counter);
-            cJSON_AddNumberToObject(o, "button_count", devs[i].button_count);
-            cJSON *buttons = cJSON_AddArrayToObject(o, "buttons");
-            for (uint8_t button_idx = 0;
-                 button_idx < devs[i].button_count && button_idx < BLE_ACCESS_MAX_BUTTONS;
-                 button_idx++) {
-                cJSON *button = cJSON_CreateObject();
-                cJSON_AddNumberToObject(button, "idx", button_idx);
-                cJSON *mqtt = cJSON_AddObjectToObject(button, "mqtt");
-                cJSON *gpio = cJSON_AddObjectToObject(button, "gpio");
-                ble_json_add_action_map(mqtt, &devs[i].buttons[button_idx].mqtt);
-                ble_json_add_action_map(gpio, &devs[i].buttons[button_idx].gpio);
-                cJSON_AddItemToArray(buttons, button);
-            }
-            cJSON_AddItemToArray(ba, o);
-        }
-    }
+    const char *error = NULL;
+    cJSON *root = build_config_backup_root(&error);
+    if (!root) return send_error(req, error ? error : "could not export config");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Content-Disposition",
@@ -2017,236 +1868,27 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
 
     cJSON *version_item = cJSON_GetObjectItem(root, "version");
     int backup_version = cJSON_IsNumber(version_item) ? (int)version_item->valuedouble : 0;
+    const char *error = NULL;
 
-    // WiFi STA
-    cJSON *wifi = cJSON_GetObjectItem(root, "wifi");
-    if (wifi) {
-        nvs_handle_t h;
-        if (nvs_open("wifi", NVS_READWRITE, &h) == ESP_OK) {
-            cJSON *s = cJSON_GetObjectItem(wifi, "ssid");
-            cJSON *p = cJSON_GetObjectItem(wifi, "password");
-            if (cJSON_IsString(s) && strlen(s->valuestring)) nvs_set_str(h, "ssid", s->valuestring);
-            if (cJSON_IsString(p) && strlen(p->valuestring)) nvs_set_str(h, "pass", p->valuestring);
-            nvs_commit(h);
-            nvs_close(h);
-        }
+    if (wifi_backup_import(root) != ESP_OK) {
+        cJSON_Delete(root);
+        return send_error(req, "could not restore WiFi config");
     }
-
-    // AP
-    cJSON *ap = cJSON_GetObjectItem(root, "ap");
-    if (ap) {
-        wifi_ap_settings_t cfg;
-        wifi_ap_load_config(&cfg);
-        cJSON *en = cJSON_GetObjectItem(ap, "enabled");
-        cJSON *s  = cJSON_GetObjectItem(ap, "ssid");
-        cJSON *p  = cJSON_GetObjectItem(ap, "password");
-        if (cJSON_IsBool(en))  cfg.enabled = cJSON_IsTrue(en);
-        if (cJSON_IsString(s)) strlcpy(cfg.ssid, s->valuestring, sizeof(cfg.ssid));
-        if (cJSON_IsString(p)) strlcpy(cfg.password, p->valuestring, sizeof(cfg.password));
-        wifi_ap_save_config(&cfg);
+    if (auth_backup_import(root, &error) != ESP_OK) {
+        cJSON_Delete(root);
+        return send_error(req, error ? error : "could not restore auth config");
     }
-
-    // HTTP Basic Auth
-    cJSON *auth = cJSON_GetObjectItem(root, "auth");
-    if (auth) {
-        auth_config_t next = {0};
-        xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-        next = s_auth_cfg;
-        xSemaphoreGive(s_auth_mutex);
-
-        cJSON *en = cJSON_GetObjectItem(auth, "enabled");
-        cJSON *u  = cJSON_GetObjectItem(auth, "username");
-        cJSON *ps = cJSON_GetObjectItem(auth, "password_set");
-        cJSON *ph = cJSON_GetObjectItem(auth, "password_sha256");
-
-        if (cJSON_IsBool(en)) next.enabled = cJSON_IsTrue(en);
-        if (cJSON_IsString(u)) {
-            if (strlen(u->valuestring) > AUTH_USER_MAX || !auth_username_is_valid(u->valuestring)) {
-                cJSON_Delete(root);
-                return send_error(req, "invalid auth username in backup");
-            }
-            strlcpy(next.username, u->valuestring, sizeof(next.username));
-        }
-        if (cJSON_IsString(ph)) {
-            if (ph->valuestring[0] == '\0') {
-                next.password_sha256[0] = '\0';
-                next.password_set = false;
-            } else if (!auth_password_hash_copy(ph->valuestring, next.password_sha256)) {
-                cJSON_Delete(root);
-                return send_error(req, "invalid auth password hash in backup");
-            } else {
-                next.password_set = true;
-            }
-        } else if (cJSON_IsBool(ps) && !cJSON_IsTrue(ps)) {
-            next.password_sha256[0] = '\0';
-            next.password_set = false;
-        }
-
-        if (next.enabled && next.username[0] == '\0') {
-            cJSON_Delete(root);
-            return send_error(req, "backup enables auth without a username");
-        }
-        if (next.enabled && !next.password_set) {
-            cJSON_Delete(root);
-            return send_error(req, "backup enables auth without a password hash");
-        }
-
-        xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-        esp_err_t err = auth_save_config_locked(&next);
-        if (err == ESP_OK) s_auth_cfg = next;
-        xSemaphoreGive(s_auth_mutex);
-        if (err != ESP_OK) {
-            cJSON_Delete(root);
-            return send_error(req, "could not restore auth config");
-        }
+    if (mqtt_backup_import(root) != ESP_OK) {
+        cJSON_Delete(root);
+        return send_error(req, "could not restore MQTT config");
     }
-
-    // MQTT broker
-    cJSON *mqtt = cJSON_GetObjectItem(root, "mqtt");
-    if (mqtt) {
-        nvs_handle_t h;
-        if (nvs_open("mqtt", NVS_READWRITE, &h) == ESP_OK) {
-            cJSON *host = cJSON_GetObjectItem(mqtt, "host");
-            cJSON *port = cJSON_GetObjectItem(mqtt, "port");
-            cJSON *user = cJSON_GetObjectItem(mqtt, "username");
-            cJSON *pass = cJSON_GetObjectItem(mqtt, "password");
-            cJSON *tls  = cJSON_GetObjectItem(mqtt, "tls");
-            if (cJSON_IsString(host)) nvs_set_str(h, "host", host->valuestring);
-            if (cJSON_IsNumber(port)) {
-                char ps[8]; snprintf(ps, sizeof(ps), "%d", (int)port->valuedouble);
-                nvs_set_str(h, "port", ps);
-            }
-            if (cJSON_IsString(user)) nvs_set_str(h, "user", user->valuestring);
-            if (cJSON_IsString(pass)) nvs_set_str(h, "pass", pass->valuestring);
-            if (cJSON_IsBool(tls))    nvs_set_str(h, "tls", cJSON_IsTrue(tls) ? "1" : "0");
-            nvs_commit(h);
-            nvs_close(h);
-        }
+    if (gpio_backup_import(root) != ESP_OK) {
+        cJSON_Delete(root);
+        return send_error(req, "could not restore GPIO config");
     }
-
-    // MQTT actions
-    cJSON *ma = cJSON_GetObjectItem(root, "mqtt_actions");
-    if (ma && cJSON_IsArray(ma)) {
-        mqtt_action_t actions[MQTT_MAX_ACTIONS];
-        memset(actions, 0, sizeof(actions));
-        cJSON *item;
-        cJSON_ArrayForEach(item, ma) {
-            int idx = cJSON_IsNumber(cJSON_GetObjectItem(item, "idx"))
-                      ? (int)cJSON_GetObjectItem(item, "idx")->valuedouble : -1;
-            if (idx < 0 || idx >= MQTT_MAX_ACTIONS) continue;
-            cJSON *n = cJSON_GetObjectItem(item, "name");
-            cJSON *t = cJSON_GetObjectItem(item, "topic");
-            cJSON *p = cJSON_GetObjectItem(item, "payload");
-            if (cJSON_IsString(n)) strlcpy(actions[idx].name, n->valuestring, sizeof(actions[idx].name));
-            if (cJSON_IsString(t)) strlcpy(actions[idx].topic, t->valuestring, sizeof(actions[idx].topic));
-            if (cJSON_IsString(p)) strlcpy(actions[idx].payload, p->valuestring, sizeof(actions[idx].payload));
-        }
-        nvs_handle_t h;
-        if (nvs_open("mqtt", NVS_READWRITE, &h) == ESP_OK) {
-            nvs_set_blob(h, "actions", actions, sizeof(actions));
-            nvs_commit(h); nvs_close(h);
-        }
-    }
-
-    // GPIO actions
-    cJSON *ga = cJSON_GetObjectItem(root, "gpio_actions");
-    if (ga && cJSON_IsArray(ga)) {
-        gpio_action_t actions[GPIO_ACTION_MAX];
-        memset(actions, 0, sizeof(actions));
-        cJSON *item;
-        cJSON_ArrayForEach(item, ga) {
-            int idx = cJSON_IsNumber(cJSON_GetObjectItem(item, "idx"))
-                      ? (int)cJSON_GetObjectItem(item, "idx")->valuedouble : -1;
-            if (idx < 0 || idx >= GPIO_ACTION_MAX) continue;
-            cJSON *n = cJSON_GetObjectItem(item, "name");
-            if (!cJSON_IsString(n)) continue;
-            strlcpy(actions[idx].name, n->valuestring, sizeof(actions[idx].name));
-            cJSON *g  = cJSON_GetObjectItem(item, "gpio");
-            cJSON *il = cJSON_GetObjectItem(item, "idle_on");
-            cJSON *al = cJSON_GetObjectItem(item, "active_low");
-            cJSON *ak = cJSON_GetObjectItem(item, "action");
-            cJSON *rd = cJSON_GetObjectItem(item, "restore_delay_ms");
-            if (cJSON_IsNumber(g))  actions[idx].gpio_num = (uint8_t)g->valuedouble;
-            if (cJSON_IsBool(il))   actions[idx].idle_on = cJSON_IsTrue(il);
-            if (cJSON_IsBool(al))   actions[idx].active_low = cJSON_IsTrue(al);
-            if (cJSON_IsString(ak)) {
-                gpio_action_kind_t kind;
-                if (gpio_action_kind_parse(ak->valuestring, &kind))
-                    actions[idx].action = (uint8_t)kind;
-            }
-            if (cJSON_IsNumber(rd)) actions[idx].restore_delay_ms = (uint32_t)rd->valuedouble;
-        }
-        nvs_handle_t h;
-        if (nvs_open("gpio", NVS_READWRITE, &h) == ESP_OK) {
-            nvs_set_blob(h, "actions", actions, sizeof(actions));
-            nvs_commit(h); nvs_close(h);
-        }
-    }
-
-    // BLE devices
-    cJSON *ba = cJSON_GetObjectItem(root, "ble_devices");
-    if (ba) {
-        if (!cJSON_IsArray(ba)) {
-            cJSON_Delete(root);
-            return send_error(req, "ble_devices must be an array");
-        }
-        if (backup_version < 3) {
-            cJSON_Delete(root);
-            return send_error(req, "BLE backup schema v3 is required");
-        }
-
-        ble_device_t devs[BLE_ACCESS_MAX_DEVICES];
-        memset(devs, 0, sizeof(devs));
-        int count = 0;
-        cJSON *item;
-        cJSON_ArrayForEach(item, ba) {
-            if (count >= BLE_ACCESS_MAX_DEVICES) {
-                cJSON_Delete(root);
-                return send_error(req, "too many BLE devices in backup");
-            }
-            cJSON *mj = cJSON_GetObjectItem(item, "mac");
-            cJSON *kj = cJSON_GetObjectItem(item, "key");
-            cJSON *bcj = cJSON_GetObjectItem(item, "button_count");
-            cJSON *buttons_j = cJSON_GetObjectItem(item, "buttons");
-            if (!cJSON_IsString(mj) || !cJSON_IsString(kj) || !cJSON_IsNumber(bcj)) {
-                cJSON_Delete(root);
-                return send_error(req, "invalid BLE backup entry");
-            }
-            ble_device_t *d = &devs[count];
-            if (!mac_from_str(mj->valuestring, d->mac) || !key_from_str(kj->valuestring, d->key)) {
-                cJSON_Delete(root);
-                return send_error(req, "invalid BLE mac or key in backup");
-            }
-            cJSON *lj = cJSON_GetObjectItem(item, "label");
-            strlcpy(d->label, cJSON_IsString(lj) ? lj->valuestring : "Device", sizeof(d->label));
-            cJSON *ej = cJSON_GetObjectItem(item, "enabled");
-            d->enabled = cJSON_IsBool(ej) ? cJSON_IsTrue(ej) : true;
-            cJSON *cj = cJSON_GetObjectItem(item, "last_counter");
-            if (cJSON_IsNumber(cj)) d->last_counter = (uint32_t)cj->valuedouble;
-            int button_count = (int)bcj->valuedouble;
-            if (button_count < 1 || button_count > BLE_ACCESS_MAX_BUTTONS) {
-                cJSON_Delete(root);
-                return send_error(req, "invalid BLE button_count in backup");
-            }
-            d->button_count = (uint8_t)button_count;
-            const char *buttons_error = NULL;
-            if (!ble_parse_button_configs(buttons_j, d->button_count, d->buttons, &buttons_error)) {
-                cJSON_Delete(root);
-                return send_error(req, buttons_error ? buttons_error : "invalid BLE buttons in backup");
-            }
-            count++;
-        }
-        nvs_handle_t h;
-        if (nvs_open("ble_access", NVS_READWRITE, &h) == ESP_OK) {
-            nvs_erase_all(h);
-            nvs_set_u8(h, "count", (uint8_t)count);
-            for (int i = 0; i < count; i++) {
-                char key[16];
-                snprintf(key, sizeof(key), "dev_%d", i);
-                nvs_set_blob(h, key, &devs[i], sizeof(ble_device_t));
-            }
-            nvs_commit(h); nvs_close(h);
-        }
+    if (ble_access_backup_import(root, backup_version, &error) != ESP_OK) {
+        cJSON_Delete(root);
+        return send_error(req, error ? error : "could not restore BLE config");
     }
 
     cJSON_Delete(root);

@@ -2,6 +2,7 @@
 #include <strings.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -167,45 +168,82 @@ static void actions_load_locked(void)
     nvs_close(h);
 }
 
-static esp_err_t actions_save_locked(void)
+static esp_err_t actions_save_blob(const gpio_action_t actions[GPIO_ACTION_MAX])
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    err = nvs_set_blob(h, "actions", s_actions, sizeof(s_actions));
+    err = nvs_set_blob(h, "actions", actions, sizeof(gpio_action_t) * GPIO_ACTION_MAX);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
 }
 
-static esp_err_t validate_action_locked(const gpio_action_t *action, int idx)
+static esp_err_t actions_save_locked(void)
 {
+    return actions_save_blob(s_actions);
+}
+
+static void snapshot_actions_locked(gpio_action_t out[GPIO_ACTION_MAX])
+{
+    memcpy(out, s_actions, sizeof(s_actions));
+}
+
+static cJSON *action_export_json(const gpio_action_t *action, int idx)
+{
+    cJSON *item = cJSON_CreateObject();
+    if (!item) return NULL;
+
+    cJSON_AddNumberToObject(item, "idx", idx);
+    cJSON_AddStringToObject(item, "name", action->name);
+    cJSON_AddNumberToObject(item, "gpio", action->gpio_num);
+    cJSON_AddBoolToObject(item, "idle_on", action->idle_on);
+    cJSON_AddBoolToObject(item, "active_low", action->active_low);
+    cJSON_AddStringToObject(item, "action", gpio_action_kind_str((gpio_action_kind_t)action->action));
+    cJSON_AddNumberToObject(item, "restore_delay_ms", action->restore_delay_ms);
+    return item;
+}
+
+static esp_err_t validate_action_candidate(const gpio_action_t actions[GPIO_ACTION_MAX],
+                                           const gpio_action_t *action,
+                                           int idx)
+{
+    if (idx < 0 || idx >= GPIO_ACTION_MAX) return ESP_ERR_INVALID_ARG;
     if (!action || action->name[0] == '\0') return ESP_ERR_INVALID_ARG;
     if (!gpio_action_gpio_allowed(action->gpio_num)) return ESP_ERR_INVALID_ARG;
     if (!action_kind_valid(action->action)) return ESP_ERR_INVALID_ARG;
 
     for (int i = 0; i < GPIO_ACTION_MAX; i++) {
-        if (i == idx || !action_slot_used(&s_actions[i])) continue;
-        if (s_actions[i].gpio_num == action->gpio_num) return ESP_ERR_INVALID_STATE;
+        if (i == idx || !action_slot_used(&actions[i])) continue;
+        if (actions[i].gpio_num == action->gpio_num) return ESP_ERR_INVALID_STATE;
     }
+
     return ESP_OK;
 }
 
-static void sanitize_loaded_actions_locked(void)
+static bool sanitize_action_array(gpio_action_t actions[GPIO_ACTION_MAX])
 {
     bool changed = false;
 
     for (int i = 0; i < GPIO_ACTION_MAX; i++) {
-        if (!action_slot_used(&s_actions[i])) continue;
-        esp_err_t err = validate_action_locked(&s_actions[i], i);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "dropping invalid GPIO action at slot %d", i);
-            memset(&s_actions[i], 0, sizeof(s_actions[i]));
+        if (!action_slot_used(&actions[i])) continue;
+        if (validate_action_candidate(actions, &actions[i], i) != ESP_OK) {
+            memset(&actions[i], 0, sizeof(actions[i]));
             changed = true;
         }
     }
 
-    if (changed) {
+    return changed;
+}
+
+static esp_err_t validate_action_locked(const gpio_action_t *action, int idx)
+{
+    return validate_action_candidate(s_actions, action, idx);
+}
+
+static void sanitize_loaded_actions_locked(void)
+{
+    if (sanitize_action_array(s_actions)) {
         actions_save_locked();
     }
 }
@@ -527,6 +565,122 @@ esp_err_t gpio_action_trigger(int idx)
 
     xSemaphoreGive(s_mutex);
     return ESP_OK;
+}
+
+struct cJSON *gpio_actions_export(void)
+{
+    if (!s_initialized || !s_mutex) return NULL;
+
+    cJSON *actions = cJSON_CreateArray();
+    if (!actions) return NULL;
+    gpio_action_t snapshot[GPIO_ACTION_MAX];
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    snapshot_actions_locked(snapshot);
+    xSemaphoreGive(s_mutex);
+    for (int i = 0; i < GPIO_ACTION_MAX; i++) {
+        if (!action_slot_used(&snapshot[i])) continue;
+
+        cJSON *item = action_export_json(&snapshot[i], i);
+        if (!item || !cJSON_AddItemToArray(actions, item)) {
+            if (item) cJSON_Delete(item);
+            cJSON_Delete(actions);
+            return NULL;
+        }
+    }
+
+    return actions;
+}
+
+struct cJSON *gpio_pins_export(void)
+{
+    uint8_t gpios[BOARD_CONFIG_MAX_ACTION_GPIOS];
+    int count = gpio_action_get_allowed_gpios(gpios, BOARD_CONFIG_MAX_ACTION_GPIOS);
+
+    cJSON *pins = cJSON_CreateArray();
+    if (!pins) return NULL;
+    for (int i = 0; i < count; i++) {
+        cJSON *pin = cJSON_CreateNumber(gpios[i]);
+        if (!pin || !cJSON_AddItemToArray(pins, pin)) {
+            if (pin) cJSON_Delete(pin);
+            cJSON_Delete(pins);
+            return NULL;
+        }
+    }
+    return pins;
+}
+
+struct cJSON *gpio_backup_export(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return NULL;
+    cJSON *actions = gpio_actions_export();
+    if (!actions) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    if (!cJSON_AddItemToObject(root, "gpio_actions", actions)) {
+        if (actions) cJSON_Delete(actions);
+        cJSON_Delete(root);
+        return NULL;
+    }
+    return root;
+}
+
+esp_err_t gpio_backup_import(const struct cJSON *root_obj)
+{
+    cJSON *root = (cJSON *)root_obj;
+    if (!root) return ESP_ERR_INVALID_ARG;
+    if (!s_initialized || !s_mutex) return ESP_ERR_INVALID_STATE;
+
+    cJSON *actions = cJSON_GetObjectItem(root, "gpio_actions");
+    if (!cJSON_IsArray(actions)) return ESP_OK;
+
+    gpio_action_t next[GPIO_ACTION_MAX];
+    memset(next, 0, sizeof(next));
+
+    cJSON *item;
+    cJSON_ArrayForEach(item, actions) {
+        cJSON *idx = cJSON_GetObjectItem(item, "idx");
+        cJSON *name = cJSON_GetObjectItem(item, "name");
+        if (!cJSON_IsNumber(idx) || !cJSON_IsString(name) || name->valuestring[0] == '\0') continue;
+
+        int action_idx = (int)idx->valuedouble;
+        if (action_idx < 0 || action_idx >= GPIO_ACTION_MAX) continue;
+
+        cJSON *gpio = cJSON_GetObjectItem(item, "gpio");
+        cJSON *idle_on = cJSON_GetObjectItem(item, "idle_on");
+        cJSON *active_low = cJSON_GetObjectItem(item, "active_low");
+        cJSON *kind = cJSON_GetObjectItem(item, "action");
+        cJSON *restore_delay_ms = cJSON_GetObjectItem(item, "restore_delay_ms");
+        if (!cJSON_IsNumber(gpio) || !cJSON_IsString(kind)) continue;
+
+        gpio_action_t *action = &next[action_idx];
+        memset(action, 0, sizeof(*action));
+        strlcpy(action->name, name->valuestring, sizeof(action->name));
+
+        action->gpio_num = (uint8_t)gpio->valuedouble;
+        if (cJSON_IsBool(idle_on)) action->idle_on = cJSON_IsTrue(idle_on);
+        if (cJSON_IsBool(active_low)) action->active_low = cJSON_IsTrue(active_low);
+        gpio_action_kind_t parsed_kind;
+        if (gpio_action_kind_parse(kind->valuestring, &parsed_kind)) {
+            action->action = (uint8_t)parsed_kind;
+        } else {
+            memset(action, 0, sizeof(*action));
+            continue;
+        }
+        if (cJSON_IsNumber(restore_delay_ms) && restore_delay_ms->valuedouble > 0) {
+            action->restore_delay_ms = (uint32_t)restore_delay_ms->valuedouble;
+        }
+    }
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    sanitize_action_array(next);
+    esp_err_t err = actions_save_blob(next);
+    if (err != ESP_OK) {
+        actions_save_locked();
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
 }
 
 // ── BOOT button monitor (board-defined GPIO) ───────────────────────────────

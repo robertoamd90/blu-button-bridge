@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include "esp_err.h"
 
+struct cJSON;
+
 #define GPIO_ACTION_MAX 16
 
 typedef enum {
@@ -70,3 +72,18 @@ esp_err_t gpio_action_get(int idx, gpio_action_t *out);
 
 // Triggers an output action slot.
 esp_err_t gpio_action_trigger(int idx);
+
+// Exports the GPIO action list used by the web API and backup payloads.
+// Returns a cJSON array owned by the caller, or NULL on failure.
+struct cJSON *gpio_actions_export(void);
+
+// Exports the allowed GPIO pin list used by the web API.
+// Returns a cJSON array owned by the caller, or NULL on failure.
+struct cJSON *gpio_pins_export(void);
+
+// Exports the full GPIO module backup payload (`gpio_actions`).
+// Returns a cJSON object owned by the caller, or NULL on failure.
+struct cJSON *gpio_backup_export(void);
+
+// Applies the GPIO module backup payload from a top-level backup object.
+esp_err_t gpio_backup_import(const struct cJSON *root);

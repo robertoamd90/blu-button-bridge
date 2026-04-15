@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/timers.h"
@@ -126,6 +127,24 @@ static void nvs_flush_timer_cb(TimerHandle_t timer)
     xSemaphoreGive(s_mutex);
 }
 
+static esp_err_t backup_save_devices(const ble_device_t *devices, int count)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+
+    err = nvs_erase_all(h);
+    if (err == ESP_OK) err = nvs_set_u8(h, "count", (uint8_t)count);
+    for (int i = 0; i < count && err == ESP_OK; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "dev_%d", i);
+        err = nvs_set_blob(h, key, &devices[i], sizeof(ble_device_t));
+    }
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 static bool mac_equal(const uint8_t a[6], const uint8_t b[6])
@@ -198,6 +217,396 @@ const char *ble_button_event_str(uint8_t event)
         case BLE_BUTTON_EVENT_BUTTON_HOLD_LEGACY:return "button_hold";
         default:                                 return "unknown";
     }
+}
+
+static void mac_to_str(const uint8_t mac[6], char *out)
+{
+    if (!mac || !out) return;
+    snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
+}
+
+bool ble_access_mac_from_str(const char *str, uint8_t mac[6])
+{
+    if (!str || !mac) return false;
+
+    unsigned int b[6];
+    if (sscanf(str, "%02X:%02X:%02X:%02X:%02X:%02X",
+               &b[5], &b[4], &b[3], &b[2], &b[1], &b[0]) != 6) {
+        return false;
+    }
+    for (int i = 0; i < 6; i++) {
+        mac[i] = (uint8_t)b[i];
+    }
+    return true;
+}
+
+bool ble_access_key_from_str(const char *str, uint8_t key[16])
+{
+    if (!str || strlen(str) != 32) return false;
+
+    for (int i = 0; i < 16; i++) {
+        unsigned int byte;
+        if (sscanf(str + i * 2, "%02X", &byte) != 1) return false;
+        if (key) key[i] = (uint8_t)byte;
+    }
+    return true;
+}
+
+static void json_add_action_map(struct cJSON *parent, const ble_button_action_map_t *map)
+{
+    if (!parent || !map) return;
+    cJSON_AddNumberToObject(parent, "single_press", map->single_press);
+    cJSON_AddNumberToObject(parent, "double_press", map->double_press);
+    cJSON_AddNumberToObject(parent, "triple_press", map->triple_press);
+    cJSON_AddNumberToObject(parent, "long_press", map->long_press);
+}
+
+static void fill_action_map_from_json(cJSON *obj, ble_button_action_map_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!obj || !cJSON_IsObject(obj)) return;
+
+    cJSON *sp = cJSON_GetObjectItem(obj, "single_press");
+    cJSON *dp = cJSON_GetObjectItem(obj, "double_press");
+    cJSON *tp = cJSON_GetObjectItem(obj, "triple_press");
+    cJSON *lp = cJSON_GetObjectItem(obj, "long_press");
+    out->single_press = cJSON_IsNumber(sp) ? (uint16_t)sp->valuedouble : 0;
+    out->double_press = cJSON_IsNumber(dp) ? (uint16_t)dp->valuedouble : 0;
+    out->triple_press = cJSON_IsNumber(tp) ? (uint16_t)tp->valuedouble : 0;
+    out->long_press = cJSON_IsNumber(lp) ? (uint16_t)lp->valuedouble : 0;
+}
+
+bool ble_access_parse_button_configs_json(const struct cJSON *buttons_item_obj,
+                                          uint8_t button_count,
+                                          ble_button_config_t out_buttons[BLE_ACCESS_MAX_BUTTONS],
+                                          const char **out_error)
+{
+    cJSON *buttons_item = (cJSON *)buttons_item_obj;
+    if (out_error) *out_error = "invalid button config";
+    if (!cJSON_IsArray(buttons_item)) {
+        if (out_error) *out_error = "buttons array required";
+        return false;
+    }
+
+    memset(out_buttons, 0, sizeof(ble_button_config_t) * BLE_ACCESS_MAX_BUTTONS);
+    uint8_t seen_mask = 0;
+    cJSON *item;
+    cJSON_ArrayForEach(item, buttons_item) {
+        cJSON *idx_item = cJSON_GetObjectItem(item, "idx");
+        if (!cJSON_IsNumber(idx_item)) {
+            if (out_error) *out_error = "button idx required";
+            return false;
+        }
+
+        int idx = (int)idx_item->valuedouble;
+        if (idx < 0 || idx >= button_count || idx >= BLE_ACCESS_MAX_BUTTONS) {
+            if (out_error) *out_error = "button idx out of range";
+            return false;
+        }
+
+        uint8_t bit = (uint8_t)(1u << idx);
+        if (seen_mask & bit) {
+            if (out_error) *out_error = "duplicate button idx";
+            return false;
+        }
+        seen_mask |= bit;
+
+        cJSON *mqtt_item = cJSON_GetObjectItem(item, "mqtt");
+        cJSON *gpio_item = cJSON_GetObjectItem(item, "gpio");
+        if (mqtt_item && !cJSON_IsObject(mqtt_item)) {
+            if (out_error) *out_error = "button mqtt config must be an object";
+            return false;
+        }
+        if (gpio_item && !cJSON_IsObject(gpio_item)) {
+            if (out_error) *out_error = "button gpio config must be an object";
+            return false;
+        }
+
+        fill_action_map_from_json(mqtt_item, &out_buttons[idx].mqtt);
+        fill_action_map_from_json(gpio_item, &out_buttons[idx].gpio);
+    }
+
+    return true;
+}
+
+static void key_to_str(const uint8_t key[16], char out[33])
+{
+    for (int i = 0; i < 16; i++) {
+        snprintf(out + i * 2, 3, "%02X", key[i]);
+    }
+    out[32] = '\0';
+}
+
+static cJSON *device_export_json_locked(int idx,
+                                        ble_access_export_view_t view,
+                                        int64_t current_ms)
+{
+    cJSON *item = cJSON_CreateObject();
+    if (!item) return NULL;
+
+    char mac_str[18];
+    mac_to_str(s_devices[idx].mac, mac_str);
+    if (!cJSON_AddStringToObject(item, "mac", mac_str) ||
+            !cJSON_AddStringToObject(item, "label", s_devices[idx].label) ||
+            !cJSON_AddBoolToObject(item, "enabled", s_devices[idx].enabled) ||
+            !cJSON_AddNumberToObject(item, "button_count", s_devices[idx].button_count)) {
+        cJSON_Delete(item);
+        return NULL;
+    }
+
+    if (view == BLE_ACCESS_EXPORT_VIEW_BACKUP) {
+        char key_str[33];
+        key_to_str(s_devices[idx].key, key_str);
+        if (!cJSON_AddStringToObject(item, "key", key_str) ||
+                !cJSON_AddNumberToObject(item, "last_counter", s_devices[idx].last_counter)) {
+            cJSON_Delete(item);
+            return NULL;
+        }
+    } else {
+        if (!cJSON_AddBoolToObject(item, "key_import_error", s_key_import_errors[idx]) ||
+                !cJSON_AddBoolToObject(item, "decrypt_error", s_decrypt_errors[idx])) {
+            cJSON_Delete(item);
+            return NULL;
+        }
+        if (s_runtime[idx].battery_known) {
+            if (!cJSON_AddNumberToObject(item, "battery_percent", s_runtime[idx].battery_percent)) {
+                cJSON_Delete(item);
+                return NULL;
+            }
+        } else if (!cJSON_AddNullToObject(item, "battery_percent")) {
+            cJSON_Delete(item);
+            return NULL;
+        }
+        if (s_runtime[idx].last_seen_ms > 0) {
+            uint32_t age_s = (uint32_t)((current_ms - s_runtime[idx].last_seen_ms) / 1000);
+            if (!cJSON_AddNumberToObject(item, "last_seen_age_s", age_s)) {
+                cJSON_Delete(item);
+                return NULL;
+            }
+        } else if (!cJSON_AddNullToObject(item, "last_seen_age_s")) {
+            cJSON_Delete(item);
+            return NULL;
+        }
+    }
+
+    cJSON *buttons = cJSON_AddArrayToObject(item, "buttons");
+    if (!buttons) {
+        cJSON_Delete(item);
+        return NULL;
+    }
+    for (uint8_t button_idx = 0;
+         button_idx < s_devices[idx].button_count && button_idx < BLE_ACCESS_MAX_BUTTONS;
+         button_idx++) {
+        cJSON *button = cJSON_CreateObject();
+        if (!button) {
+            cJSON_Delete(item);
+            return NULL;
+        }
+
+        if (!cJSON_AddNumberToObject(button, "idx", button_idx)) {
+            cJSON_Delete(button);
+            cJSON_Delete(item);
+            return NULL;
+        }
+        if (view == BLE_ACCESS_EXPORT_VIEW_FE) {
+            if (s_runtime[idx].buttons[button_idx].last_event_ms > 0) {
+                uint32_t age_s = (uint32_t)((current_ms - s_runtime[idx].buttons[button_idx].last_event_ms) / 1000);
+                if (!cJSON_AddStringToObject(button, "last_event",
+                                             ble_button_event_str(s_runtime[idx].buttons[button_idx].last_event)) ||
+                        !cJSON_AddNumberToObject(button, "last_event_age_s", age_s)) {
+                    cJSON_Delete(button);
+                    cJSON_Delete(item);
+                    return NULL;
+                }
+            } else if (!cJSON_AddNullToObject(button, "last_event") ||
+                    !cJSON_AddNullToObject(button, "last_event_age_s")) {
+                cJSON_Delete(button);
+                cJSON_Delete(item);
+                return NULL;
+            }
+        }
+
+        cJSON *mqtt = cJSON_AddObjectToObject(button, "mqtt");
+        cJSON *gpio = cJSON_AddObjectToObject(button, "gpio");
+        if (!mqtt || !gpio) {
+            cJSON_Delete(button);
+            cJSON_Delete(item);
+            return NULL;
+        }
+        json_add_action_map(mqtt, &s_devices[idx].buttons[button_idx].mqtt);
+        json_add_action_map(gpio, &s_devices[idx].buttons[button_idx].gpio);
+        if (!cJSON_AddItemToArray(buttons, button)) {
+            cJSON_Delete(button);
+            cJSON_Delete(item);
+            return NULL;
+        }
+    }
+
+    return item;
+}
+
+struct cJSON *ble_access_devices_export(ble_access_export_view_t view)
+{
+    if (!s_mutex) return NULL;
+
+    cJSON *devices = cJSON_CreateArray();
+    if (!devices) return NULL;
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    int64_t current_ms = (view == BLE_ACCESS_EXPORT_VIEW_FE) ? now_ms() : 0;
+    for (int i = 0; i < s_count; i++) {
+        cJSON *item = device_export_json_locked(i, view, current_ms);
+        if (!item || !cJSON_AddItemToArray(devices, item)) {
+            if (item) cJSON_Delete(item);
+            xSemaphoreGive(s_mutex);
+            cJSON_Delete(devices);
+            return NULL;
+        }
+    }
+    xSemaphoreGive(s_mutex);
+    return devices;
+}
+
+struct cJSON *ble_access_registration_status_export(void)
+{
+    if (!s_mutex) return NULL;
+
+    cJSON *obj = cJSON_CreateObject();
+    if (!obj) return NULL;
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool registering = s_registering;
+    bool has_pending = s_has_pending;
+    char mac_str[18];
+    if (has_pending) {
+        mac_to_str(s_pending_mac, mac_str);
+    }
+    xSemaphoreGive(s_mutex);
+
+    if (!cJSON_AddBoolToObject(obj, "registering", registering)) {
+        cJSON_Delete(obj);
+        return NULL;
+    }
+    if (has_pending) {
+        if (!cJSON_AddStringToObject(obj, "pending_mac", mac_str)) {
+            cJSON_Delete(obj);
+            return NULL;
+        }
+    } else if (!cJSON_AddNullToObject(obj, "pending_mac")) {
+        cJSON_Delete(obj);
+        return NULL;
+    }
+
+    return obj;
+}
+
+static bool backup_add_section(cJSON *root)
+{
+    if (!root) return false;
+    if (!s_mutex) return false;
+
+    cJSON *devices = ble_access_devices_export(BLE_ACCESS_EXPORT_VIEW_BACKUP);
+    if (!devices) return false;
+    if (!cJSON_AddItemToObject(root, "ble_devices", devices)) {
+        cJSON_Delete(devices);
+        return false;
+    }
+    return true;
+}
+
+struct cJSON *ble_access_backup_export(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return NULL;
+    if (!backup_add_section(root)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    return root;
+}
+
+esp_err_t ble_access_backup_import(const struct cJSON *root_obj,
+                                   int backup_version,
+                                   const char **out_error)
+{
+    cJSON *root = (cJSON *)root_obj;
+    if (!root) return ESP_ERR_INVALID_ARG;
+    if (!s_mutex) return ESP_ERR_INVALID_STATE;
+
+    cJSON *devices = cJSON_GetObjectItem(root, "ble_devices");
+    if (!devices) return ESP_OK;
+    if (!cJSON_IsArray(devices)) {
+        if (out_error) *out_error = "ble_devices must be an array";
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (backup_version < 3) {
+        if (out_error) *out_error = "BLE backup schema v3 is required";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ble_device_t next[BLE_ACCESS_MAX_DEVICES];
+    memset(next, 0, sizeof(next));
+    int count = 0;
+
+    cJSON *item;
+    cJSON_ArrayForEach(item, devices) {
+        if (count >= BLE_ACCESS_MAX_DEVICES) {
+            if (out_error) *out_error = "too many BLE devices in backup";
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        cJSON *mac = cJSON_GetObjectItem(item, "mac");
+        cJSON *key = cJSON_GetObjectItem(item, "key");
+        cJSON *button_count = cJSON_GetObjectItem(item, "button_count");
+        cJSON *buttons = cJSON_GetObjectItem(item, "buttons");
+        if (!cJSON_IsString(mac) || !cJSON_IsString(key) || !cJSON_IsNumber(button_count)) {
+            if (out_error) *out_error = "invalid BLE backup entry";
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        ble_device_t *device = &next[count];
+        if (!ble_access_mac_from_str(mac->valuestring, device->mac) ||
+                !ble_access_key_from_str(key->valuestring, device->key)) {
+            if (out_error) *out_error = "invalid BLE mac or key in backup";
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        cJSON *label = cJSON_GetObjectItem(item, "label");
+        cJSON *enabled = cJSON_GetObjectItem(item, "enabled");
+        cJSON *last_counter = cJSON_GetObjectItem(item, "last_counter");
+        strlcpy(device->label, cJSON_IsString(label) ? label->valuestring : "Device", sizeof(device->label));
+        device->enabled = cJSON_IsBool(enabled) ? cJSON_IsTrue(enabled) : true;
+        if (cJSON_IsNumber(last_counter)) {
+            device->last_counter = (uint32_t)last_counter->valuedouble;
+        }
+
+        int parsed_button_count = (int)button_count->valuedouble;
+        if (parsed_button_count < 1 || parsed_button_count > BLE_ACCESS_MAX_BUTTONS) {
+            if (out_error) *out_error = "invalid BLE button_count in backup";
+            return ESP_ERR_INVALID_ARG;
+        }
+        device->button_count = (uint8_t)parsed_button_count;
+        if (!ble_access_parse_button_configs_json(buttons, device->button_count, device->buttons, out_error)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        count++;
+    }
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_nvs_timer) {
+        xTimerStop(s_nvs_timer, 0);
+    }
+    esp_err_t err = backup_save_devices(next, count);
+    if (err == ESP_OK) {
+        s_nvs_dirty = false;
+    } else {
+        nvs_save();
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
 }
 
 // Locates the BTHome service data in the raw advertisement payload.

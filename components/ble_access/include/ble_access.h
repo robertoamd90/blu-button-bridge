@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
+struct cJSON;
+
 #define BLE_ACCESS_MAX_DEVICES 8
 #define BLE_ACCESS_MAX_BUTTONS 6
 
@@ -70,6 +72,11 @@ typedef struct {
     ble_button_telemetry_t buttons[BLE_ACCESS_MAX_BUTTONS];
 } ble_device_telemetry_t;
 
+typedef enum {
+    BLE_ACCESS_EXPORT_VIEW_FE = 0,
+    BLE_ACCESS_EXPORT_VIEW_BACKUP = 1,
+} ble_access_export_view_t;
+
 // Initialises NimBLE and starts passive scanning. Call once from app_main.
 void      ble_access_init(void);
 
@@ -131,3 +138,28 @@ bool      ble_access_has_decrypt_error(const uint8_t mac[6]);
 
 // Removes the device with the given MAC and saves to NVS.
 esp_err_t ble_access_device_delete(const uint8_t mac[6]);
+
+// BLE JSON helpers still used by the web API request parsing paths.
+bool ble_access_mac_from_str(const char *str, uint8_t mac[6]);
+bool ble_access_key_from_str(const char *str, uint8_t key[16]);
+bool ble_access_parse_button_configs_json(const struct cJSON *buttons_item,
+                                          uint8_t button_count,
+                                          ble_button_config_t out_buttons[BLE_ACCESS_MAX_BUTTONS],
+                                          const char **out_error);
+
+// Exports the BLE device list for the requested consumer view.
+// `BLE_ACCESS_EXPORT_VIEW_FE` omits secrets and includes runtime telemetry.
+// `BLE_ACCESS_EXPORT_VIEW_BACKUP` includes persisted backup fields only.
+struct cJSON *ble_access_devices_export(ble_access_export_view_t view);
+
+// Exports the BLE registration status payload used by the web API.
+struct cJSON *ble_access_registration_status_export(void);
+
+// Exports the full BLE module backup payload (`ble_devices`).
+// Returns a cJSON object owned by the caller, or NULL on failure.
+struct cJSON *ble_access_backup_export(void);
+
+// Applies the BLE module backup payload from a top-level backup object.
+esp_err_t ble_access_backup_import(const struct cJSON *root,
+                                   int backup_version,
+                                   const char **out_error);

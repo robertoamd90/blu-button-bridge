@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
+struct cJSON;
+
 #define WIFI_STATUS_LIST \
     X(NOT_CONFIG, "not config") \
     X(DISABLED,   "disabled")   \
@@ -75,11 +77,16 @@ typedef struct {
     char  password[65];  // WPA2 password (min 8 chars); empty = open network
 } wifi_ap_settings_t;
 
+typedef enum {
+    WIFI_EXPORT_VIEW_FE = 0,
+    WIFI_EXPORT_VIEW_BACKUP = 1,
+} wifi_export_view_t;
+
 // Loads AP configuration from NVS (applies defaults if not found).
 void wifi_ap_load_config(wifi_ap_settings_t *cfg);
 
 // Saves AP configuration to NVS and updates the in-memory copy.
-void wifi_ap_save_config(const wifi_ap_settings_t *cfg);
+esp_err_t wifi_ap_save_config(const wifi_ap_settings_t *cfg);
 
 // Starts the configured SoftAP in APSTA mode.
 // Also starts the DNS server for the captive portal.
@@ -91,11 +98,24 @@ void wifi_stop_ap(void);
 // Returns true if the AP is active.
 bool wifi_ap_is_active(void);
 
-// Reads the SSID saved in NVS (returns false if not configured).
-bool wifi_get_ssid(char *buf, size_t len);
+// Exports the STA WiFi config payload for the requested consumer view.
+// `WIFI_EXPORT_VIEW_FE` redacts the password and adds FE-only flags.
+// `WIFI_EXPORT_VIEW_BACKUP` includes the full persisted backup fields.
+struct cJSON *wifi_config_export(wifi_export_view_t view);
 
-// Returns true if a password is saved in NVS, without exposing it.
-bool wifi_get_password_set(void);
+// Exports the AP config payload for the requested consumer view.
+struct cJSON *wifi_ap_config_export(wifi_export_view_t view);
+
+// Exports the WiFi scan result array used by the web API.
+// Returns ESP_OK and stores a caller-owned cJSON array in *out on success.
+esp_err_t wifi_scan_export(struct cJSON **out);
+
+// Exports the full WiFi module backup payload (`wifi` and `ap`).
+// Returns a cJSON object owned by the caller, or NULL on failure.
+struct cJSON *wifi_backup_export(void);
+
+// Applies the WiFi module backup payload from a top-level backup object.
+esp_err_t wifi_backup_import(const struct cJSON *root);
 
 // Performs a WiFi scan and fills results[0..max_count-1].
 // Returns ESP_OK on success and writes the number of networks to out_count.

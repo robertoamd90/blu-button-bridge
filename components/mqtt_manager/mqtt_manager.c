@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <inttypes.h>
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -212,6 +213,65 @@ static bool load_saved_config(char *host, size_t host_len,
     return true;
 }
 
+static esp_err_t snapshot_saved_config_locked(char *host, size_t host_len,
+                                              char *port_str, size_t port_len,
+                                              char *user, size_t user_len,
+                                              char *pass, size_t pass_len,
+                                              char *tls_str, size_t tls_len)
+{
+    if (host_len > 0) host[0] = '\0';
+    if (port_len > 0) port_str[0] = '\0';
+    if (user_len > 0) user[0] = '\0';
+    if (pass_len > 0) pass[0] = '\0';
+    if (tls_len > 0) tls_str[0] = '\0';
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("mqtt", NVS_READONLY, &nvs);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    if (err != ESP_OK) return err;
+
+    err = nvs_get_str(nvs, "host", host, &host_len);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) {
+        err = nvs_get_str(nvs, "port", port_str, &port_len);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = nvs_get_str(nvs, "user", user, &user_len);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = nvs_get_str(nvs, "pass", pass, &pass_len);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = nvs_get_str(nvs, "tls", tls_str, &tls_len);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+
+    nvs_close(nvs);
+    return err;
+}
+
+static esp_err_t save_config_snapshot_locked(const char *host,
+                                             const char *port_str,
+                                             const char *user,
+                                             const char *pass,
+                                             const char *tls_str)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("mqtt", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(nvs, "host", host ? host : "");
+    if (err == ESP_OK) err = nvs_set_str(nvs, "port", port_str ? port_str : "");
+    if (err == ESP_OK) err = nvs_set_str(nvs, "user", user ? user : "");
+    if (err == ESP_OK) err = nvs_set_str(nvs, "pass", pass ? pass : "");
+    if (err == ESP_OK) err = nvs_set_str(nvs, "tls", tls_str ? tls_str : "0");
+    if (err == ESP_OK) err = nvs_commit(nvs);
+    nvs_close(nvs);
+    return err;
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 static void mqtt_connect_broker_locked(const char *host, uint32_t port, const char *username,
@@ -278,14 +338,59 @@ static void actions_load_locked(void)
     nvs_close(h);
 }
 
-static esp_err_t actions_save_locked(void)
+static esp_err_t actions_save_blob(const mqtt_action_t actions[MQTT_MAX_ACTIONS])
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open("mqtt", NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    err = nvs_set_blob(h, "actions", s_actions, sizeof(s_actions));
+    err = nvs_set_blob(h, "actions", actions, sizeof(mqtt_action_t) * MQTT_MAX_ACTIONS);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
+    return err;
+}
+
+static esp_err_t actions_save_locked(void)
+{
+    return actions_save_blob(s_actions);
+}
+
+static void ensure_actions_loaded_locked(void)
+{
+    if (s_actions_loaded) return;
+    actions_load_locked();
+    s_actions_loaded = true;
+}
+
+static void actions_snapshot_locked(mqtt_action_t out[MQTT_MAX_ACTIONS])
+{
+    ensure_actions_loaded_locked();
+    memcpy(out, s_actions, sizeof(s_actions));
+}
+
+static cJSON *action_export_json(const mqtt_action_t *action, int idx)
+{
+    cJSON *item = cJSON_CreateObject();
+    if (!item) return NULL;
+
+    cJSON_AddNumberToObject(item, "idx", idx);
+    cJSON_AddStringToObject(item, "name", action->name);
+    cJSON_AddStringToObject(item, "topic", action->topic);
+    cJSON_AddStringToObject(item, "payload", action->payload);
+    return item;
+}
+
+static esp_err_t actions_replace_locked(const mqtt_action_t actions[MQTT_MAX_ACTIONS])
+{
+    ensure_actions_loaded_locked();
+
+    mqtt_action_t previous[MQTT_MAX_ACTIONS];
+    memcpy(previous, s_actions, sizeof(previous));
+    memcpy(s_actions, actions, sizeof(s_actions));
+
+    esp_err_t err = actions_save_locked();
+    if (err != ESP_OK) {
+        memcpy(s_actions, previous, sizeof(s_actions));
+    }
     return err;
 }
 
@@ -387,6 +492,175 @@ esp_err_t mqtt_action_trigger(int idx)
     return ESP_OK;
 }
 
+struct cJSON *mqtt_config_export(mqtt_export_view_t view)
+{
+    if (!ensure_runtime_state()) return NULL;
+
+    cJSON *mqtt = cJSON_CreateObject();
+    if (!mqtt) return NULL;
+
+    char host[128] = {0};
+    char user[64] = {0};
+    char pass[64] = {0};
+    char port_str[8] = {0};
+    char tls_str[4] = {0};
+    esp_err_t err = ESP_OK;
+    xSemaphoreTake(s_op_mutex, portMAX_DELAY);
+    err = snapshot_saved_config_locked(host, sizeof(host), port_str, sizeof(port_str),
+                                       user, sizeof(user), pass, sizeof(pass),
+                                       tls_str, sizeof(tls_str));
+    xSemaphoreGive(s_op_mutex);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "could not snapshot MQTT config for export: %s", esp_err_to_name(err));
+        cJSON_Delete(mqtt);
+        return NULL;
+    }
+
+    const bool configured = host[0] != '\0';
+    const int port = (port_str[0] != '\0') ? atoi(port_str) : 1883;
+    const bool use_tls = strcmp(tls_str, "1") == 0;
+
+    if (view == MQTT_EXPORT_VIEW_BACKUP) {
+        cJSON_AddStringToObject(mqtt, "host", host);
+        cJSON_AddNumberToObject(mqtt, "port", port);
+        cJSON_AddStringToObject(mqtt, "username", user);
+        cJSON_AddStringToObject(mqtt, "password", pass);
+        cJSON_AddBoolToObject(mqtt, "tls", use_tls);
+    } else {
+        cJSON_AddBoolToObject(mqtt, "configured", configured);
+        cJSON_AddStringToObject(mqtt, "host", host);
+        cJSON_AddNumberToObject(mqtt, "port", port);
+        cJSON_AddStringToObject(mqtt, "username", user);
+        cJSON_AddBoolToObject(mqtt, "tls", use_tls);
+        cJSON_AddBoolToObject(mqtt, "password_set", pass[0] != '\0');
+    }
+
+    return mqtt;
+}
+
+struct cJSON *mqtt_actions_export(void)
+{
+    if (!ensure_runtime_state()) return NULL;
+
+    cJSON *actions = cJSON_CreateArray();
+    if (!actions) return NULL;
+
+    mqtt_action_t snapshot[MQTT_MAX_ACTIONS];
+    xSemaphoreTake(s_actions_mutex, portMAX_DELAY);
+    actions_snapshot_locked(snapshot);
+    xSemaphoreGive(s_actions_mutex);
+    for (int i = 0; i < MQTT_MAX_ACTIONS; i++) {
+        if (snapshot[i].name[0] == '\0') continue;
+
+        cJSON *item = action_export_json(&snapshot[i], i);
+        if (!item || !cJSON_AddItemToArray(actions, item)) {
+            if (item) cJSON_Delete(item);
+            cJSON_Delete(actions);
+            return NULL;
+        }
+    }
+
+    return actions;
+}
+
+struct cJSON *mqtt_backup_export(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return NULL;
+    cJSON *mqtt = mqtt_config_export(MQTT_EXPORT_VIEW_BACKUP);
+    cJSON *actions = mqtt_actions_export();
+    if (!mqtt || !actions) {
+        if (mqtt) cJSON_Delete(mqtt);
+        if (actions) cJSON_Delete(actions);
+        cJSON_Delete(root);
+        return NULL;
+    }
+    if (!cJSON_AddItemToObject(root, "mqtt", mqtt)) {
+        cJSON_Delete(mqtt);
+        cJSON_Delete(actions);
+        cJSON_Delete(root);
+        return NULL;
+    }
+    if (!cJSON_AddItemToObject(root, "mqtt_actions", actions)) {
+        cJSON_Delete(actions);
+        cJSON_Delete(root);
+        return NULL;
+    }
+    return root;
+}
+
+esp_err_t mqtt_backup_import(const struct cJSON *root_obj)
+{
+    cJSON *root = (cJSON *)root_obj;
+    if (!root) return ESP_ERR_INVALID_ARG;
+
+    cJSON *mqtt = cJSON_GetObjectItem(root, "mqtt");
+    if (cJSON_IsObject(mqtt)) {
+        if (!ensure_runtime_state()) return ESP_ERR_NO_MEM;
+
+        char host_buf[128] = {0};
+        char user_buf[64] = {0};
+        char pass_buf[64] = {0};
+        char port_buf[8] = {0};
+        char tls_buf[4] = {0};
+        xSemaphoreTake(s_op_mutex, portMAX_DELAY);
+        esp_err_t err = snapshot_saved_config_locked(host_buf, sizeof(host_buf),
+                                                     port_buf, sizeof(port_buf),
+                                                     user_buf, sizeof(user_buf),
+                                                     pass_buf, sizeof(pass_buf),
+                                                     tls_buf, sizeof(tls_buf));
+        if (err != ESP_OK) {
+            xSemaphoreGive(s_op_mutex);
+            return err;
+        }
+
+        cJSON *host = cJSON_GetObjectItem(mqtt, "host");
+        cJSON *port = cJSON_GetObjectItem(mqtt, "port");
+        cJSON *user = cJSON_GetObjectItem(mqtt, "username");
+        cJSON *pass = cJSON_GetObjectItem(mqtt, "password");
+        cJSON *tls = cJSON_GetObjectItem(mqtt, "tls");
+        if (cJSON_IsString(host)) strlcpy(host_buf, host->valuestring, sizeof(host_buf));
+        if (cJSON_IsNumber(port)) snprintf(port_buf, sizeof(port_buf), "%d", (int)port->valuedouble);
+        if (cJSON_IsString(user)) strlcpy(user_buf, user->valuestring, sizeof(user_buf));
+        if (cJSON_IsString(pass)) strlcpy(pass_buf, pass->valuestring, sizeof(pass_buf));
+        if (cJSON_IsBool(tls)) strlcpy(tls_buf, cJSON_IsTrue(tls) ? "1" : "0", sizeof(tls_buf));
+
+        err = save_config_snapshot_locked(host_buf, port_buf, user_buf, pass_buf, tls_buf);
+        xSemaphoreGive(s_op_mutex);
+        if (err != ESP_OK) return err;
+    }
+
+    cJSON *actions = cJSON_GetObjectItem(root, "mqtt_actions");
+    if (cJSON_IsArray(actions)) {
+        mqtt_action_t next[MQTT_MAX_ACTIONS];
+        memset(next, 0, sizeof(next));
+
+        cJSON *item;
+        cJSON_ArrayForEach(item, actions) {
+            cJSON *idx = cJSON_GetObjectItem(item, "idx");
+            if (!cJSON_IsNumber(idx)) continue;
+
+            int action_idx = (int)idx->valuedouble;
+            if (action_idx < 0 || action_idx >= MQTT_MAX_ACTIONS) continue;
+
+            cJSON *name = cJSON_GetObjectItem(item, "name");
+            cJSON *topic = cJSON_GetObjectItem(item, "topic");
+            cJSON *payload = cJSON_GetObjectItem(item, "payload");
+            if (cJSON_IsString(name)) strlcpy(next[action_idx].name, name->valuestring, sizeof(next[action_idx].name));
+            if (cJSON_IsString(topic)) strlcpy(next[action_idx].topic, topic->valuestring, sizeof(next[action_idx].topic));
+            if (cJSON_IsString(payload)) strlcpy(next[action_idx].payload, payload->valuestring, sizeof(next[action_idx].payload));
+        }
+
+        if (!ensure_runtime_state()) return ESP_ERR_NO_MEM;
+        xSemaphoreTake(s_actions_mutex, portMAX_DELAY);
+        esp_err_t err = actions_replace_locked(next);
+        xSemaphoreGive(s_actions_mutex);
+        if (err != ESP_OK) return err;
+    }
+
+    return ESP_OK;
+}
+
 void mqtt_init(void)
 {
     if (!ensure_runtime_state()) {
@@ -395,12 +669,9 @@ void mqtt_init(void)
         return;
     }
 
-    if (!s_actions_loaded) {
-        xSemaphoreTake(s_actions_mutex, portMAX_DELAY);
-        actions_load_locked();
-        xSemaphoreGive(s_actions_mutex);
-        s_actions_loaded = true;
-    }
+    xSemaphoreTake(s_actions_mutex, portMAX_DELAY);
+    ensure_actions_loaded_locked();
+    xSemaphoreGive(s_actions_mutex);
 
     char host[128] = {}, port_str[8] = {}, user[64] = {}, pass[64] = {};
     bool use_tls = false;
@@ -499,33 +770,6 @@ void mqtt_connect_api(const char *host, uint32_t port,
         set_status(MQTT_STATUS_WAITING_NET);
     }
     xSemaphoreGive(s_op_mutex);
-}
-
-bool mqtt_get_saved_config(char *host, size_t host_len, uint32_t *port,
-                           char *user, size_t user_len, bool *use_tls, bool *has_pass)
-{
-    nvs_handle_t nvs;
-    if (nvs_open("mqtt", NVS_READONLY, &nvs) != ESP_OK) return false;
-
-    char port_str[8] = {};
-    size_t port_len = sizeof(port_str);
-    char pass[64] = {};
-    size_t pass_len = sizeof(pass);
-    char tls_str[4] = {};
-    size_t tls_len = sizeof(tls_str);
-
-    bool ok = (nvs_get_str(nvs, "host", host, &host_len) == ESP_OK && strlen(host) > 0);
-    if (ok) {
-        nvs_get_str(nvs, "port", port_str, &port_len);
-        nvs_get_str(nvs, "user", user, &user_len);
-        nvs_get_str(nvs, "pass", pass, &pass_len);
-        if (nvs_get_str(nvs, "tls", tls_str, &tls_len) == ESP_OK && use_tls)
-            *use_tls = (tls_str[0] == '1');
-        if (port)     *port     = (uint32_t)atoi(port_str);
-        if (has_pass) *has_pass = (strlen(pass) > 0);
-    }
-    nvs_close(nvs);
-    return ok;
 }
 
 void mqtt_disconnect(void)

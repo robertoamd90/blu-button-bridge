@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include "esp_err.h"
 
+struct cJSON;
+
 #define MQTT_STATUS_LIST \
     X(NOT_CONFIG,  "not config")  \
     X(DISABLED,    "disabled")    \
@@ -66,12 +68,6 @@ void mqtt_connect_api(const char *host, uint32_t port,
                       const char *username, const char *password, bool use_tls,
                       bool password_provided);
 
-// Reads saved MQTT config from NVS without exposing the password.
-// has_pass is true if a password is stored in NVS.
-// Returns false if no credentials are configured.
-bool mqtt_get_saved_config(char *host, size_t host_len, uint32_t *port,
-                           char *user, size_t user_len, bool *use_tls, bool *has_pass);
-
 // ── MQTT Actions ─────────────────────────────────────────────────────────────
 // Named MQTT publish actions that can be triggered by BLE button events.
 // Up to 16 slots (0–15); slot is free when name[0] == '\0'.
@@ -83,6 +79,11 @@ typedef struct {
     char topic[64];
     char payload[32];
 } mqtt_action_t;
+
+typedef enum {
+    MQTT_EXPORT_VIEW_FE = 0,
+    MQTT_EXPORT_VIEW_BACKUP = 1,
+} mqtt_export_view_t;
 
 // Finds the first free slot, writes the action, saves to NVS.
 // Returns the slot index (0–15) on success, -1 if full or name is empty.
@@ -99,3 +100,19 @@ esp_err_t mqtt_action_get(int idx, mqtt_action_t *out);
 
 // Publishes the action at slot idx. Silently skips if the slot is free or MQTT is down.
 esp_err_t mqtt_action_trigger(int idx);
+
+// Exports the MQTT config payload for the requested consumer view.
+// `MQTT_EXPORT_VIEW_FE` redacts the password and adds FE-only flags.
+// `MQTT_EXPORT_VIEW_BACKUP` includes the full persisted backup fields.
+struct cJSON *mqtt_config_export(mqtt_export_view_t view);
+
+// Exports the MQTT action list used by the web API and backup payloads.
+// Returns a cJSON array owned by the caller, or NULL on failure.
+struct cJSON *mqtt_actions_export(void);
+
+// Exports the full MQTT module backup payload (`mqtt` and `mqtt_actions`).
+// Returns a cJSON object owned by the caller, or NULL on failure.
+struct cJSON *mqtt_backup_export(void);
+
+// Applies the MQTT module backup payload from a top-level backup object.
+esp_err_t mqtt_backup_import(const struct cJSON *root);
