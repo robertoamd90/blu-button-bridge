@@ -143,6 +143,7 @@ If tooling is unstable, say that explicitly instead of claiming review is comple
 - Ask before tagging `@codex review` on GitHub PRs.
 - Use `branch + PR` for refactors, new modules, behavior changes, and structurally meaningful work.
 - Small targeted fixes may go directly to `main` only when clearly agreed.
+- When work fully resolves a tracked issue, close it at merge time. Prefer PR auto-close references such as `Closes #<n>` and do not wait for the release tag unless the issue explicitly tracks release availability.
 
 ## Release rules
 

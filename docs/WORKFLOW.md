@@ -246,6 +246,16 @@ Use `branch + PR` for:
 
 Direct commits to `main` are acceptable only when explicitly aligned with the user for small, contained work.
 
+### Issue closure
+
+When a PR fully resolves a tracked issue:
+
+- close the issue when the change lands in `main`, not when the release tag is created
+- prefer adding `Closes #<n>` or equivalent in the PR body so GitHub closes it automatically on merge
+- if the PR was merged without an auto-close reference, close the issue manually after merge and point back to the merged PR
+
+Only wait for the release tag if the issue explicitly tracks public release availability rather than merged implementation status.
+
 ### Branch retention
 
 - Do not delete branches after merge unless explicitly asked.
