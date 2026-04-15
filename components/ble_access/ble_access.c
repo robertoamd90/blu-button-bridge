@@ -517,7 +517,6 @@ bool ble_access_backup_export(struct cJSON *root)
 }
 
 esp_err_t ble_access_backup_import(const struct cJSON *root_obj,
-                                   int backup_version,
                                    const char **out_error)
 {
     cJSON *root = (cJSON *)root_obj;
@@ -530,11 +529,6 @@ esp_err_t ble_access_backup_import(const struct cJSON *root_obj,
         if (out_error) *out_error = "ble_devices must be an array";
         return ESP_ERR_INVALID_ARG;
     }
-    if (backup_version < 3) {
-        if (out_error) *out_error = "BLE backup schema v3 is required";
-        return ESP_ERR_INVALID_ARG;
-    }
-
     ble_device_t next[BLE_ACCESS_MAX_DEVICES];
     memset(next, 0, sizeof(next));
     int count = 0;

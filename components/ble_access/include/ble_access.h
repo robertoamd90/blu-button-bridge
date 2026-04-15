@@ -161,5 +161,4 @@ bool ble_access_backup_export(struct cJSON *root);
 
 // Applies the BLE module backup payload from a top-level backup object.
 esp_err_t ble_access_backup_import(const struct cJSON *root,
-                                   int backup_version,
                                    const char **out_error);

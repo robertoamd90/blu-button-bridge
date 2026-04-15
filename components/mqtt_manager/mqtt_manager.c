@@ -381,11 +381,10 @@ static cJSON *action_export_json(const mqtt_action_t *action, int idx)
 
 static esp_err_t actions_import_locked(const mqtt_action_t actions[MQTT_MAX_ACTIONS])
 {
-    ensure_actions_loaded_locked();
-
     esp_err_t err = actions_save_blob(actions);
     if (err == ESP_OK) {
         memcpy(s_actions, actions, sizeof(s_actions));
+        s_actions_loaded = true;
     }
     return err;
 }

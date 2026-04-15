@@ -33,6 +33,7 @@ static const char *AUTH_NS = "http_auth";
 #define AUTH_USER_MAX     32
 #define AUTH_PASS_MAX     64
 #define AUTH_HASH_HEX_LEN 65
+#define CONFIG_BACKUP_VERSION 3
 #define GITHUB_HTTP_BUFFER_SIZE    8192
 #define GITHUB_HTTP_TX_BUFFER_SIZE 1024
 #define GITHUB_HTTP_MAX_REDIRECTS  5
@@ -1747,7 +1748,7 @@ static cJSON *build_config_backup_root(const char **out_error)
 
     cJSON *root = cJSON_CreateObject();
     if (!root) return NULL;
-    if (!cJSON_AddNumberToObject(root, "version", 3)) goto json_fail;
+    if (!cJSON_AddNumberToObject(root, "version", CONFIG_BACKUP_VERSION)) goto json_fail;
 
     if (!wifi_backup_export(root)) {
         if (out_error) *out_error = "could not export WiFi config";
@@ -1822,7 +1823,11 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
     if (!root) return send_error(req, "invalid json");
 
     cJSON *version_item = cJSON_GetObjectItem(root, "version");
-    int backup_version = cJSON_IsNumber(version_item) ? (int)version_item->valuedouble : 0;
+    if (!cJSON_IsNumber(version_item) ||
+            (int)version_item->valuedouble != CONFIG_BACKUP_VERSION) {
+        cJSON_Delete(root);
+        return send_error(req, "unsupported config backup version");
+    }
     const char *error = NULL;
 
     if (wifi_backup_import(root) != ESP_OK) {
@@ -1841,7 +1846,7 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
         cJSON_Delete(root);
         return send_error(req, "could not restore GPIO config");
     }
-    if (ble_access_backup_import(root, backup_version, &error) != ESP_OK) {
+    if (ble_access_backup_import(root, &error) != ESP_OK) {
         cJSON_Delete(root);
         return send_error(req, error ? error : "could not restore BLE config");
     }
