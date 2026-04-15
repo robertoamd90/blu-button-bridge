@@ -71,7 +71,7 @@ Look for:
 Start with:
 
 - `components/web_manager/web_manager.c`
-- `site/index.html`
+- `components/web_manager/index.html`
 - `docs/API_CONTRACTS.md`
 - `README.md`
 
@@ -137,16 +137,24 @@ Look for:
 Start with:
 
 - `components/web_manager/web_manager.c`
-- module-specific NVS code in:
+- `components/web_manager/index.html`
+- module-owned backup helpers and persisted config owners in:
   - `components/wifi_manager/wifi_manager.c`
+  - `components/wifi_manager/include/wifi_manager.h` (`wifi_backup_export`, `wifi_backup_import`)
   - `components/mqtt_manager/mqtt_manager.c`
+  - `components/mqtt_manager/include/mqtt_manager.h` (`mqtt_backup_export`, `mqtt_backup_import`)
   - `components/gpio_manager/gpio_manager.c`
+  - `components/gpio_manager/include/gpio_manager.h` (`gpio_backup_export`, `gpio_backup_import`)
   - `components/ble_access/ble_access.c`
-  - `components/ota_manager/ota_manager.c`
+  - `components/ble_access/include/ble_access.h` (`ble_access_backup_export`, `ble_access_backup_import`)
 - `docs/API_CONTRACTS.md`
 
 Look for:
 
+- top-level HTTP envelope in `web_manager`
+- frontend backup/restore call sites in `index.html`
+- `auth` as the config section that still stays owned by `web_manager`
+- module-owned backup/export helpers in the domain component that owns the section
 - exported JSON shape
 - restore tolerance vs strict validation
 - namespace and key compatibility
