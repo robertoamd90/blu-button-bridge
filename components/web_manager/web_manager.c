@@ -72,6 +72,7 @@ static portMUX_TYPE        s_console_stream_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t            s_console_stream_generation = 0;
 
 static void auth_load_config(void);
+static void auth_snapshot_config(auth_config_t *out);
 static bool auth_require(httpd_req_t *req);
 
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -142,9 +143,7 @@ static bool send_auth_challenge(httpd_req_t *req)
 static bool auth_require(httpd_req_t *req)
 {
     auth_config_t cfg = {0};
-    if (s_auth_mutex) xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-    cfg = s_auth_cfg;
-    if (s_auth_mutex) xSemaphoreGive(s_auth_mutex);
+    auth_snapshot_config(&cfg);
 
     if (!cfg.enabled) return true;
     if (!cfg.password_set || cfg.username[0] == '\0') return send_auth_challenge(req);
@@ -1063,9 +1062,7 @@ static esp_err_t handle_system_factory_reset(httpd_req_t *req)
 static esp_err_t handle_auth_config_get(httpd_req_t *req)
 {
     auth_config_t cfg = {0};
-    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-    cfg = s_auth_cfg;
-    xSemaphoreGive(s_auth_mutex);
+    auth_snapshot_config(&cfg);
 
     cJSON *obj = cJSON_CreateObject();
     cJSON_AddBoolToObject(obj, "enabled", cfg.enabled);

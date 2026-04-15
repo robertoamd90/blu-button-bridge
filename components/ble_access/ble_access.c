@@ -75,19 +75,26 @@ static SemaphoreHandle_t    s_mutex;
 
 // ── NVS ───────────────────────────────────────────────────────────────────────
 
-static esp_err_t nvs_save(void)
+static esp_err_t nvs_save_devices(const ble_device_t *devices, int count, bool erase_all)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    err = nvs_set_u8(h, "count", (uint8_t)s_count);
-    for (int i = 0; i < s_count && err == ESP_OK; i++) {
+    if (erase_all) err = nvs_erase_all(h);
+    if (err == ESP_OK) err = nvs_set_u8(h, "count", (uint8_t)count);
+    for (int i = 0; i < count && err == ESP_OK; i++) {
         char key[16];
         snprintf(key, sizeof(key), "dev_%d", i);
-        err = nvs_set_blob(h, key, &s_devices[i], sizeof(ble_device_t));
+        err = nvs_set_blob(h, key, &devices[i], sizeof(ble_device_t));
     }
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
+    return err;
+}
+
+static esp_err_t nvs_save(void)
+{
+    esp_err_t err = nvs_save_devices(s_devices, s_count, false);
     if (err != ESP_OK) ESP_LOGE(TAG, "NVS save failed: %s", esp_err_to_name(err));
     return err;
 }
@@ -125,24 +132,6 @@ static void nvs_flush_timer_cb(TimerHandle_t timer)
         }
     }
     xSemaphoreGive(s_mutex);
-}
-
-static esp_err_t backup_save_devices(const ble_device_t *devices, int count)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-
-    err = nvs_erase_all(h);
-    if (err == ESP_OK) err = nvs_set_u8(h, "count", (uint8_t)count);
-    for (int i = 0; i < count && err == ESP_OK; i++) {
-        char key[16];
-        snprintf(key, sizeof(key), "dev_%d", i);
-        err = nvs_set_blob(h, key, &devices[i], sizeof(ble_device_t));
-    }
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    return err;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -582,7 +571,7 @@ esp_err_t ble_access_backup_import(const struct cJSON *root_obj,
     if (s_nvs_timer) {
         xTimerStop(s_nvs_timer, 0);
     }
-    esp_err_t err = backup_save_devices(next, count);
+    esp_err_t err = nvs_save_devices(next, count, true);
     if (err == ESP_OK) {
         s_nvs_dirty = false;
     }

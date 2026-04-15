@@ -708,8 +708,8 @@ Restore rules:
 - auth restore is stricter than many other sections:
   - invalid username or invalid password hash rejects restore
   - enabling auth without username or password hash rejects restore
+- restore rejects any backup whose top-level `version` is not exactly `3`
 - BLE restore is strict about schema:
-  - when `ble_devices` is present, backup `version` must be `3` or newer
   - each BLE device entry must provide `button_count` and `buttons`
   - legacy flat BLE event fields are ignored and are not a migration path; the required v3 nested fields must still be present
 - successful restore triggers reboot
