@@ -276,6 +276,7 @@ When preparing a release:
    - `## Changes`
    - 2-5 concrete bullets
    - optional `## Notes` only when needed
+   - use `## Notes` when the release intentionally includes a destructive compatibility break, and name the affected persisted state, config import/export schema, or upgrade expectation explicitly
    - do not repeat artifact lists or checksum blocks in the body unless the user explicitly asks for them there
 
 Board-specific release identity is driven by `config/boards.json`.

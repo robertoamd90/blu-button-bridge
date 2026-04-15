@@ -71,6 +71,9 @@ If documents overlap or appear to conflict:
   - Use `docs/API_CONTRACTS.md` for JSON/API payloads and compatibility-sensitive HTTP routes.
   - Use `docs/CONSOLE_STREAM_CONTRACT.md` for `/console` and `/api/console/stream`.
   - Use `docs/PAGES_INSTALLER_CONTRACT.md` for the browser installer and mirrored Pages payload.
+- Do not assume backward compatibility for intentionally destructive persisted-state or schema changes.
+  - This repository may ship destructive upgrades without migration when that is the explicit choice for the change.
+  - When a release intentionally breaks persisted state compatibility, call it out explicitly in the release notes.
 
 ## Validation
 

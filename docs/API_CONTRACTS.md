@@ -711,7 +711,7 @@ Restore rules:
 - BLE restore is strict about schema:
   - when `ble_devices` is present, backup `version` must be `3` or newer
   - each BLE device entry must provide `button_count` and `buttons`
-  - the old flat BLE event fields are rejected
+  - legacy flat BLE event fields are ignored and are not a migration path; the required v3 nested fields must still be present
 - successful restore triggers reboot
 
 ## 8. Compatibility rule
@@ -727,3 +727,9 @@ update both:
 
 - this document
 - the UI and any dependent code paths in the same change
+
+Repository policy for destructive compatibility changes:
+
+- backward compatibility is not guaranteed for intentionally destructive persisted-state or schema changes
+- when a change intentionally breaks restore/import or on-device persisted state compatibility, document that break clearly in the release notes
+- do not describe a destructive schema change here as migratable unless the code actually implements the migration path
