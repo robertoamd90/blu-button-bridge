@@ -103,16 +103,16 @@ bool wifi_ap_is_active(void);
 // `WIFI_EXPORT_VIEW_BACKUP` includes the full persisted backup fields.
 struct cJSON *wifi_config_export(wifi_export_view_t view);
 
-// Exports the AP config payload for the requested consumer view.
-struct cJSON *wifi_ap_config_export(wifi_export_view_t view);
+// Exports the AP config payload used by the web API and backup payloads.
+struct cJSON *wifi_ap_config_export(void);
 
 // Exports the WiFi scan result array used by the web API.
 // Returns ESP_OK and stores a caller-owned cJSON array in *out on success.
 esp_err_t wifi_scan_export(struct cJSON **out);
 
-// Exports the full WiFi module backup payload (`wifi` and `ap`).
-// Returns a cJSON object owned by the caller, or NULL on failure.
-struct cJSON *wifi_backup_export(void);
+// Appends the full WiFi module backup payload (`wifi` and `ap`) to root.
+// Returns false on JSON allocation/ownership failure.
+bool wifi_backup_export(struct cJSON *root);
 
 // Applies the WiFi module backup payload from a top-level backup object.
 esp_err_t wifi_backup_import(const struct cJSON *root);

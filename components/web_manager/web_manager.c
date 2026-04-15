@@ -206,15 +206,13 @@ static void auth_snapshot_config(auth_config_t *out)
     if (s_auth_mutex) xSemaphoreGive(s_auth_mutex);
 }
 
-static cJSON *auth_backup_export(void)
+static bool auth_backup_export(cJSON *root)
 {
-    cJSON *root = cJSON_CreateObject();
-    if (!root) return NULL;
+    if (!root) return false;
 
     cJSON *auth = cJSON_AddObjectToObject(root, "auth");
     if (!auth) {
-        cJSON_Delete(root);
-        return NULL;
+        return false;
     }
 
     auth_config_t cfg = {0};
@@ -223,10 +221,9 @@ static cJSON *auth_backup_export(void)
             !cJSON_AddStringToObject(auth, "username", cfg.username) ||
             !cJSON_AddBoolToObject(auth, "password_set", cfg.password_set) ||
             !cJSON_AddStringToObject(auth, "password_sha256", cfg.password_sha256)) {
-        cJSON_Delete(root);
-        return NULL;
+        return false;
     }
-    return root;
+    return true;
 }
 
 static esp_err_t auth_apply_config_candidate(const auth_config_t *next, const char **out_error)
@@ -824,7 +821,7 @@ static esp_err_t handle_ap_handoff_complete(httpd_req_t *req)
 // GET /api/ap/config
 static esp_err_t handle_ap_config_get(httpd_req_t *req)
 {
-    cJSON *obj = wifi_ap_config_export(WIFI_EXPORT_VIEW_FE);
+    cJSON *obj = wifi_ap_config_export();
     if (!obj) return send_error(req, "could not read AP config");
     send_cjson(req, obj);
     return ESP_OK;
@@ -1744,85 +1741,43 @@ static esp_err_t handle_update_install(httpd_req_t *req)
 
 // ── Config backup / restore ──────────────────────────────────────────────────
 
-static bool take_export_item(cJSON *dst, cJSON *src, const char *key)
-{
-    if (!dst || !src || !key) return false;
-    cJSON *item = cJSON_DetachItemFromObjectCaseSensitive(src, key);
-    if (!item) return false;
-    if (!cJSON_AddItemToObject(dst, key, item)) {
-        cJSON_Delete(item);
-        return false;
-    }
-    return true;
-}
-
 static cJSON *build_config_backup_root(const char **out_error)
 {
     if (out_error) *out_error = NULL;
 
     cJSON *root = cJSON_CreateObject();
-    cJSON *wifi = NULL;
-    cJSON *auth = NULL;
-    cJSON *mqtt = NULL;
-    cJSON *gpio = NULL;
-    cJSON *ble = NULL;
     if (!root) return NULL;
     if (!cJSON_AddNumberToObject(root, "version", 3)) goto json_fail;
 
-    wifi = wifi_backup_export();
-    if (!wifi) {
+    if (!wifi_backup_export(root)) {
         if (out_error) *out_error = "could not export WiFi config";
         goto fail;
     }
-    if (!take_export_item(root, wifi, "wifi") || !take_export_item(root, wifi, "ap")) {
-        goto json_fail;
-    }
 
-    auth = auth_backup_export();
-    if (!auth) {
+    if (!auth_backup_export(root)) {
         if (out_error) *out_error = "could not export auth config";
         goto fail;
     }
-    if (!take_export_item(root, auth, "auth")) goto json_fail;
 
-    mqtt = mqtt_backup_export();
-    if (!mqtt) {
+    if (!mqtt_backup_export(root)) {
         if (out_error) *out_error = "could not export MQTT config";
         goto fail;
     }
-    if (!take_export_item(root, mqtt, "mqtt") || !take_export_item(root, mqtt, "mqtt_actions")) {
-        goto json_fail;
-    }
 
-    gpio = gpio_backup_export();
-    if (!gpio) {
+    if (!gpio_backup_export(root)) {
         if (out_error) *out_error = "could not export GPIO config";
         goto fail;
     }
-    if (!take_export_item(root, gpio, "gpio_actions")) goto json_fail;
 
-    ble = ble_access_backup_export();
-    if (!ble) {
+    if (!ble_access_backup_export(root)) {
         if (out_error) *out_error = "could not export BLE config";
         goto fail;
     }
-    if (!take_export_item(root, ble, "ble_devices")) goto json_fail;
-
-    cJSON_Delete(wifi);
-    cJSON_Delete(auth);
-    cJSON_Delete(mqtt);
-    cJSON_Delete(gpio);
-    cJSON_Delete(ble);
     return root;
 
 json_fail:
     if (out_error) *out_error = "json error";
 fail:
-    cJSON_Delete(wifi);
-    cJSON_Delete(auth);
-    cJSON_Delete(mqtt);
-    cJSON_Delete(gpio);
-    cJSON_Delete(ble);
     cJSON_Delete(root);
     return NULL;
 }
@@ -1892,9 +1847,8 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
     }
 
     cJSON_Delete(root);
-    send_json(req, "{\"ok\":true}");
-    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
-    return ESP_OK;
+    return send_ok_and_start_task(req, reboot_task, "reboot",
+                                  "could not schedule reboot");
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

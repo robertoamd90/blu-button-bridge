@@ -110,9 +110,9 @@ struct cJSON *mqtt_config_export(mqtt_export_view_t view);
 // Returns a cJSON array owned by the caller, or NULL on failure.
 struct cJSON *mqtt_actions_export(void);
 
-// Exports the full MQTT module backup payload (`mqtt` and `mqtt_actions`).
-// Returns a cJSON object owned by the caller, or NULL on failure.
-struct cJSON *mqtt_backup_export(void);
+// Appends the full MQTT module backup payload (`mqtt` and `mqtt_actions`) to root.
+// Returns false on JSON allocation/ownership failure.
+bool mqtt_backup_export(struct cJSON *root);
 
 // Applies the MQTT module backup payload from a top-level backup object.
 esp_err_t mqtt_backup_import(const struct cJSON *root);

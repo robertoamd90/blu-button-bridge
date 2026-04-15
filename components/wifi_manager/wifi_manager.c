@@ -248,14 +248,12 @@ static esp_err_t backup_load_credentials(char *ssid, size_t ssid_len, char *pass
         return err;
     }
 
-    if (ssid[0] != '\0') {
-        size_t pass_len_local = pass_len;
-        err = nvs_get_str(nvs, "pass", pass, &pass_len_local);
-        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
-    }
+    size_t pass_len_local = pass_len;
+    esp_err_t pass_err = nvs_get_str(nvs, "pass", pass, &pass_len_local);
+    if (pass_err == ESP_ERR_NVS_NOT_FOUND) pass_err = ESP_OK;
 
     nvs_close(nvs);
-    return err;
+    return (err != ESP_OK) ? err : pass_err;
 }
 
 static bool wifi_reason_is_config_error(wifi_err_reason_t reason)
@@ -789,10 +787,8 @@ struct cJSON *wifi_config_export(wifi_export_view_t view)
     return wifi;
 }
 
-struct cJSON *wifi_ap_config_export(wifi_export_view_t view)
+struct cJSON *wifi_ap_config_export(void)
 {
-    (void)view;
-
     cJSON *ap = cJSON_CreateObject();
     if (!ap) return NULL;
 
@@ -841,30 +837,26 @@ esp_err_t wifi_scan_export(struct cJSON **out)
     return ESP_OK;
 }
 
-struct cJSON *wifi_backup_export(void)
+bool wifi_backup_export(struct cJSON *root)
 {
-    cJSON *root = cJSON_CreateObject();
-    if (!root) return NULL;
+    if (!root) return false;
     cJSON *wifi = wifi_config_export(WIFI_EXPORT_VIEW_BACKUP);
-    cJSON *ap = wifi_ap_config_export(WIFI_EXPORT_VIEW_BACKUP);
+    cJSON *ap = wifi_ap_config_export();
     if (!wifi || !ap) {
         if (wifi) cJSON_Delete(wifi);
         if (ap) cJSON_Delete(ap);
-        cJSON_Delete(root);
-        return NULL;
+        return false;
     }
     if (!cJSON_AddItemToObject(root, "wifi", wifi)) {
         cJSON_Delete(wifi);
         cJSON_Delete(ap);
-        cJSON_Delete(root);
-        return NULL;
+        return false;
     }
     if (!cJSON_AddItemToObject(root, "ap", ap)) {
         cJSON_Delete(ap);
-        cJSON_Delete(root);
-        return NULL;
+        return false;
     }
-    return root;
+    return true;
 }
 
 esp_err_t wifi_backup_import(const struct cJSON *root_obj)
@@ -874,18 +866,18 @@ esp_err_t wifi_backup_import(const struct cJSON *root_obj)
 
     cJSON *wifi = cJSON_GetObjectItem(root, "wifi");
     if (cJSON_IsObject(wifi)) {
+        cJSON *ssid = cJSON_GetObjectItem(wifi, "ssid");
+        cJSON *pass = cJSON_GetObjectItem(wifi, "password");
+        if (!cJSON_IsString(ssid) || !cJSON_IsString(pass)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
         nvs_handle_t h;
         esp_err_t err = nvs_open("wifi", NVS_READWRITE, &h);
         if (err != ESP_OK) return err;
 
-        cJSON *ssid = cJSON_GetObjectItem(wifi, "ssid");
-        cJSON *pass = cJSON_GetObjectItem(wifi, "password");
-        if (cJSON_IsString(ssid)) {
-            err = nvs_set_str(h, "ssid", ssid->valuestring);
-        }
-        if (err == ESP_OK && cJSON_IsString(pass)) {
-            err = nvs_set_str(h, "pass", pass->valuestring);
-        }
+        err = nvs_set_str(h, "ssid", ssid->valuestring);
+        if (err == ESP_OK) err = nvs_set_str(h, "pass", pass->valuestring);
         if (err == ESP_OK) {
             err = nvs_commit(h);
         }
@@ -895,15 +887,17 @@ esp_err_t wifi_backup_import(const struct cJSON *root_obj)
 
     cJSON *ap = cJSON_GetObjectItem(root, "ap");
     if (cJSON_IsObject(ap)) {
-        wifi_ap_settings_t cfg;
-        wifi_ap_load_config(&cfg);
-
         cJSON *enabled = cJSON_GetObjectItem(ap, "enabled");
         cJSON *ssid = cJSON_GetObjectItem(ap, "ssid");
         cJSON *pass = cJSON_GetObjectItem(ap, "password");
-        if (cJSON_IsBool(enabled)) cfg.enabled = cJSON_IsTrue(enabled);
-        if (cJSON_IsString(ssid)) strlcpy(cfg.ssid, ssid->valuestring, sizeof(cfg.ssid));
-        if (cJSON_IsString(pass)) strlcpy(cfg.password, pass->valuestring, sizeof(cfg.password));
+        if (!cJSON_IsBool(enabled) || !cJSON_IsString(ssid) || !cJSON_IsString(pass)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        wifi_ap_settings_t cfg = {0};
+        cfg.enabled = cJSON_IsTrue(enabled);
+        strlcpy(cfg.ssid, ssid->valuestring, sizeof(cfg.ssid));
+        strlcpy(cfg.password, pass->valuestring, sizeof(cfg.password));
         esp_err_t err = wifi_ap_apply_config(&cfg);
         if (err != ESP_OK) return err;
     }

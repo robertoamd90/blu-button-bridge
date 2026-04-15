@@ -81,9 +81,9 @@ struct cJSON *gpio_actions_export(void);
 // Returns a cJSON array owned by the caller, or NULL on failure.
 struct cJSON *gpio_pins_export(void);
 
-// Exports the full GPIO module backup payload (`gpio_actions`).
-// Returns a cJSON object owned by the caller, or NULL on failure.
-struct cJSON *gpio_backup_export(void);
+// Appends the full GPIO module backup payload (`gpio_actions`) to root.
+// Returns false on JSON allocation/ownership failure.
+bool gpio_backup_export(struct cJSON *root);
 
 // Applies the GPIO module backup payload from a top-level backup object.
 esp_err_t gpio_backup_import(const struct cJSON *root);

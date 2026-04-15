@@ -609,21 +609,18 @@ struct cJSON *gpio_pins_export(void)
     return pins;
 }
 
-struct cJSON *gpio_backup_export(void)
+bool gpio_backup_export(struct cJSON *root)
 {
-    cJSON *root = cJSON_CreateObject();
-    if (!root) return NULL;
+    if (!root) return false;
     cJSON *actions = gpio_actions_export();
     if (!actions) {
-        cJSON_Delete(root);
-        return NULL;
+        return false;
     }
     if (!cJSON_AddItemToObject(root, "gpio_actions", actions)) {
         if (actions) cJSON_Delete(actions);
-        cJSON_Delete(root);
-        return NULL;
+        return false;
     }
-    return root;
+    return true;
 }
 
 esp_err_t gpio_backup_import(const struct cJSON *root_obj)
@@ -677,8 +674,10 @@ esp_err_t gpio_backup_import(const struct cJSON *root_obj)
     sanitize_action_array(next);
     esp_err_t err = actions_save_blob(next);
     if (err != ESP_OK) {
-        actions_save_locked();
+        xSemaphoreGive(s_mutex);
+        return err;
     }
+    memcpy(s_actions, next, sizeof(s_actions));
     xSemaphoreGive(s_mutex);
     return err;
 }

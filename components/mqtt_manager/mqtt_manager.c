@@ -379,17 +379,13 @@ static cJSON *action_export_json(const mqtt_action_t *action, int idx)
     return item;
 }
 
-static esp_err_t actions_replace_locked(const mqtt_action_t actions[MQTT_MAX_ACTIONS])
+static esp_err_t actions_import_locked(const mqtt_action_t actions[MQTT_MAX_ACTIONS])
 {
     ensure_actions_loaded_locked();
 
-    mqtt_action_t previous[MQTT_MAX_ACTIONS];
-    memcpy(previous, s_actions, sizeof(previous));
-    memcpy(s_actions, actions, sizeof(s_actions));
-
-    esp_err_t err = actions_save_locked();
-    if (err != ESP_OK) {
-        memcpy(s_actions, previous, sizeof(s_actions));
+    esp_err_t err = actions_save_blob(actions);
+    if (err == ESP_OK) {
+        memcpy(s_actions, actions, sizeof(s_actions));
     }
     return err;
 }
@@ -563,30 +559,26 @@ struct cJSON *mqtt_actions_export(void)
     return actions;
 }
 
-struct cJSON *mqtt_backup_export(void)
+bool mqtt_backup_export(struct cJSON *root)
 {
-    cJSON *root = cJSON_CreateObject();
-    if (!root) return NULL;
+    if (!root) return false;
     cJSON *mqtt = mqtt_config_export(MQTT_EXPORT_VIEW_BACKUP);
     cJSON *actions = mqtt_actions_export();
     if (!mqtt || !actions) {
         if (mqtt) cJSON_Delete(mqtt);
         if (actions) cJSON_Delete(actions);
-        cJSON_Delete(root);
-        return NULL;
+        return false;
     }
     if (!cJSON_AddItemToObject(root, "mqtt", mqtt)) {
         cJSON_Delete(mqtt);
         cJSON_Delete(actions);
-        cJSON_Delete(root);
-        return NULL;
+        return false;
     }
     if (!cJSON_AddItemToObject(root, "mqtt_actions", actions)) {
         cJSON_Delete(actions);
-        cJSON_Delete(root);
-        return NULL;
+        return false;
     }
-    return root;
+    return true;
 }
 
 esp_err_t mqtt_backup_import(const struct cJSON *root_obj)
@@ -598,34 +590,26 @@ esp_err_t mqtt_backup_import(const struct cJSON *root_obj)
     if (cJSON_IsObject(mqtt)) {
         if (!ensure_runtime_state()) return ESP_ERR_NO_MEM;
 
-        char host_buf[128] = {0};
-        char user_buf[64] = {0};
-        char pass_buf[64] = {0};
-        char port_buf[8] = {0};
-        char tls_buf[4] = {0};
-        xSemaphoreTake(s_op_mutex, portMAX_DELAY);
-        esp_err_t err = snapshot_saved_config_locked(host_buf, sizeof(host_buf),
-                                                     port_buf, sizeof(port_buf),
-                                                     user_buf, sizeof(user_buf),
-                                                     pass_buf, sizeof(pass_buf),
-                                                     tls_buf, sizeof(tls_buf));
-        if (err != ESP_OK) {
-            xSemaphoreGive(s_op_mutex);
-            return err;
-        }
-
         cJSON *host = cJSON_GetObjectItem(mqtt, "host");
         cJSON *port = cJSON_GetObjectItem(mqtt, "port");
         cJSON *user = cJSON_GetObjectItem(mqtt, "username");
         cJSON *pass = cJSON_GetObjectItem(mqtt, "password");
         cJSON *tls = cJSON_GetObjectItem(mqtt, "tls");
-        if (cJSON_IsString(host)) strlcpy(host_buf, host->valuestring, sizeof(host_buf));
-        if (cJSON_IsNumber(port)) snprintf(port_buf, sizeof(port_buf), "%d", (int)port->valuedouble);
-        if (cJSON_IsString(user)) strlcpy(user_buf, user->valuestring, sizeof(user_buf));
-        if (cJSON_IsString(pass)) strlcpy(pass_buf, pass->valuestring, sizeof(pass_buf));
-        if (cJSON_IsBool(tls)) strlcpy(tls_buf, cJSON_IsTrue(tls) ? "1" : "0", sizeof(tls_buf));
+        if (!cJSON_IsString(host) || !cJSON_IsNumber(port) ||
+                !cJSON_IsString(user) || !cJSON_IsString(pass) || !cJSON_IsBool(tls)) {
+            return ESP_ERR_INVALID_ARG;
+        }
 
-        err = save_config_snapshot_locked(host_buf, port_buf, user_buf, pass_buf, tls_buf);
+        char port_buf[8] = {0};
+        char tls_buf[4] = {0};
+        snprintf(port_buf, sizeof(port_buf), "%d", (int)port->valuedouble);
+        strlcpy(tls_buf, cJSON_IsTrue(tls) ? "1" : "0", sizeof(tls_buf));
+        xSemaphoreTake(s_op_mutex, portMAX_DELAY);
+        esp_err_t err = save_config_snapshot_locked(host->valuestring,
+                                                    port_buf,
+                                                    user->valuestring,
+                                                    pass->valuestring,
+                                                    tls_buf);
         xSemaphoreGive(s_op_mutex);
         if (err != ESP_OK) return err;
     }
@@ -651,9 +635,8 @@ esp_err_t mqtt_backup_import(const struct cJSON *root_obj)
             if (cJSON_IsString(payload)) strlcpy(next[action_idx].payload, payload->valuestring, sizeof(next[action_idx].payload));
         }
 
-        if (!ensure_runtime_state()) return ESP_ERR_NO_MEM;
         xSemaphoreTake(s_actions_mutex, portMAX_DELAY);
-        esp_err_t err = actions_replace_locked(next);
+        esp_err_t err = actions_import_locked(next);
         xSemaphoreGive(s_actions_mutex);
         if (err != ESP_OK) return err;
     }

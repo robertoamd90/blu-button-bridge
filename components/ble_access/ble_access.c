@@ -502,7 +502,7 @@ struct cJSON *ble_access_registration_status_export(void)
     return obj;
 }
 
-static bool backup_add_section(cJSON *root)
+bool ble_access_backup_export(struct cJSON *root)
 {
     if (!root) return false;
     if (!s_mutex) return false;
@@ -514,17 +514,6 @@ static bool backup_add_section(cJSON *root)
         return false;
     }
     return true;
-}
-
-struct cJSON *ble_access_backup_export(void)
-{
-    cJSON *root = cJSON_CreateObject();
-    if (!root) return NULL;
-    if (!backup_add_section(root)) {
-        cJSON_Delete(root);
-        return NULL;
-    }
-    return root;
 }
 
 esp_err_t ble_access_backup_import(const struct cJSON *root_obj,
@@ -602,8 +591,6 @@ esp_err_t ble_access_backup_import(const struct cJSON *root_obj,
     esp_err_t err = backup_save_devices(next, count);
     if (err == ESP_OK) {
         s_nvs_dirty = false;
-    } else {
-        nvs_save();
     }
     xSemaphoreGive(s_mutex);
     return err;

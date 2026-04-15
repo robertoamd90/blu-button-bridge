@@ -155,9 +155,9 @@ struct cJSON *ble_access_devices_export(ble_access_export_view_t view);
 // Exports the BLE registration status payload used by the web API.
 struct cJSON *ble_access_registration_status_export(void);
 
-// Exports the full BLE module backup payload (`ble_devices`).
-// Returns a cJSON object owned by the caller, or NULL on failure.
-struct cJSON *ble_access_backup_export(void);
+// Appends the full BLE module backup payload (`ble_devices`) to root.
+// Returns false on JSON allocation/ownership failure.
+bool ble_access_backup_export(struct cJSON *root);
 
 // Applies the BLE module backup payload from a top-level backup object.
 esp_err_t ble_access_backup_import(const struct cJSON *root,
