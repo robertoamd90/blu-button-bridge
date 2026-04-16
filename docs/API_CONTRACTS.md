@@ -703,6 +703,8 @@ Notable details:
 Restore rules:
 
 - restore request body limit is currently 12 KB
+- restore is designed for device-generated backups produced by this firmware family
+- restore is not treated as a hardened general-purpose import path for arbitrary third-party or hand-edited JSON
 - restore is tolerant of missing sections
 - array entries with invalid or out-of-range indexes are skipped
 - auth restore is stricter than many other sections:
