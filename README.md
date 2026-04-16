@@ -1,6 +1,6 @@
 # BluButtonBridge
 
-ESP-IDF v6.1 firmware for ESP32 that bridges **Shelly BLU Button** BLE events to **MQTT** publish actions and **GPIO** outputs, with a built-in web configuration UI.
+ESP-IDF v6.0 firmware for ESP32 that bridges **Shelly BLU Button** BLE events to **MQTT** publish actions and **GPIO** outputs, with a built-in web configuration UI.
 
 Press a Shelly button, the ESP32 receives the encrypted BLE advertisement, and triggers the MQTT publishes and GPIO toggles you configured. No cloud required.
 
@@ -122,8 +122,8 @@ Detailed request and response contracts live in [docs/API_CONTRACTS.md](docs/API
 
 ```bash
 mkdir -p ~/esp && cd ~/esp
-git clone --recursive https://github.com/espressif/esp-idf.git
-cd esp-idf
+git clone --recursive --branch v6.0 https://github.com/espressif/esp-idf.git esp-idf-v6.0
+cd esp-idf-v6.0
 PYTHON=$(which python3.12) ./install.sh esp32 esp32c3
 ```
 
@@ -144,7 +144,7 @@ Each profile also selects a board definition through Kconfig:
 Use the helper script so each target keeps its own `sdkconfig` and build directory:
 
 ```bash
-source ~/esp/esp-idf/export.sh
+source ~/esp/esp-idf-v6.0/export.sh
 scripts/idf-target.sh esp32 build
 scripts/idf-target.sh esp32c3 build
 ```
@@ -159,21 +159,21 @@ scripts/idf-target.sh esp32c3-supermini build
 ### Flash
 
 ```bash
-source ~/esp/esp-idf/export.sh
+source ~/esp/esp-idf-v6.0/export.sh
 scripts/idf-target.sh esp32 flash
 ```
 
 For a different serial port:
 
 ```bash
-source ~/esp/esp-idf/export.sh
+source ~/esp/esp-idf-v6.0/export.sh
 ESPPORT=/dev/cu.usbmodem123 scripts/idf-target.sh esp32c3-supermini flash
 ```
 
 ### Monitor
 
 ```bash
-source ~/esp/esp-idf/export.sh
+source ~/esp/esp-idf-v6.0/export.sh
 scripts/idf-target.sh esp32 monitor
 ```
 
@@ -207,7 +207,7 @@ The firmware OTA flow likewise expects board-specific OTA assets:
 For local release packaging from existing build output:
 
 ```bash
-source ~/esp/esp-idf/export.sh
+source ~/esp/esp-idf-v6.0/export.sh
 scripts/package-release.sh all
 ```
 
@@ -217,9 +217,9 @@ Board metadata for build aliases, installer options, and release asset naming is
 
 | Problem | Likely cause | Fix |
 |---------|-------------|-----|
-| `idf.py` not found | `export.sh` not sourced | `source ~/esp/esp-idf/export.sh` |
+| `idf.py` not found | `export.sh` not sourced | `source ~/esp/esp-idf-v6.0/export.sh` |
 | `jq` not found | board catalog helpers cannot resolve target metadata | install `jq` and retry the wrapper script |
-| `riscv32-esp-elf-gcc` not found | ESP32-C3 toolchain not installed | `cd ~/esp/esp-idf && ./install.sh esp32c3` |
+| `riscv32-esp-elf-gcc` not found | ESP32-C3 toolchain not installed | `cd ~/esp/esp-idf-v6.0 && ./install.sh esp32c3` |
 | Flash stuck on `Connecting...` | ESP32 not in flash mode | Hold **BOOT** during flash |
 | Port busy | Monitor open elsewhere | Close monitor with `Ctrl+T`, then `Ctrl+X` |
 | Build fails after fullclean | Target/profile mismatch | Re-run with `scripts/idf-target.sh <target> reconfigure` |

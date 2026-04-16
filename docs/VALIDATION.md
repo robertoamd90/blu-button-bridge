@@ -12,8 +12,8 @@ For non-trivial work, the normal validation path is:
 
 Examples:
 
-- `source ~/esp/esp-idf/export.sh && scripts/idf-target.sh esp32-devkit-v1 flash`
-- `source ~/esp/esp-idf/export.sh && ESPPORT=/dev/cu.usbmodem3101 scripts/idf-target.sh esp32c3-supermini flash`
+- `source ~/esp/esp-idf-v6.0/export.sh && scripts/idf-target.sh esp32-devkit-v1 flash`
+- `source ~/esp/esp-idf-v6.0/export.sh && ESPPORT=/dev/cu.usbmodem3101 scripts/idf-target.sh esp32c3-supermini flash`
 
 This is the preferred path because it validates both:
 

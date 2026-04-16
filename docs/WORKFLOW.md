@@ -13,8 +13,8 @@ For normal feature or fix work:
 
 Examples:
 
-- `source ~/esp/esp-idf/export.sh && scripts/idf-target.sh esp32-devkit-v1 flash`
-- `source ~/esp/esp-idf/export.sh && ESPPORT=/dev/cu.usbmodem3101 scripts/idf-target.sh esp32c3-supermini flash`
+- `source ~/esp/esp-idf-v6.0/export.sh && scripts/idf-target.sh esp32-devkit-v1 flash`
+- `source ~/esp/esp-idf-v6.0/export.sh && ESPPORT=/dev/cu.usbmodem3101 scripts/idf-target.sh esp32c3-supermini flash`
 
 Behavior changes include:
 
@@ -32,7 +32,7 @@ Default local assumptions for this repo:
 
 - ESP-IDF is installed locally
 - the IDF environment can be loaded with:
-  - `source ~/esp/esp-idf/export.sh`
+  - `source ~/esp/esp-idf-v6.0/export.sh`
 - the default board flash port is:
   - `/dev/cu.usbserial-0001`
 - GitHub CLI may be used for issue / PR / release work

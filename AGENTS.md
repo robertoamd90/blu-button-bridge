@@ -79,8 +79,8 @@ If documents overlap or appear to conflict:
 
 - Follow [docs/VALIDATION.md](docs/VALIDATION.md) for the validation ladder and fallback rules.
 - For non-trivial work, the default validation step is a target-aware build+flash for the active board profile, for example:
-  - `source ~/esp/esp-idf/export.sh && scripts/idf-target.sh esp32-devkit-v1 flash`
-  - `source ~/esp/esp-idf/export.sh && ESPPORT=/dev/cu.usbmodem3101 scripts/idf-target.sh esp32c3-supermini flash`
+  - `source ~/esp/esp-idf-v6.0/export.sh && scripts/idf-target.sh esp32-devkit-v1 flash`
+  - `source ~/esp/esp-idf-v6.0/export.sh && ESPPORT=/dev/cu.usbmodem3101 scripts/idf-target.sh esp32c3-supermini flash`
 - After flashing, stop and let the user run on-device tests unless explicitly asked to do more.
 
 ## User-directed review agents
