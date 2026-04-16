@@ -251,6 +251,17 @@ static void json_add_action_map(struct cJSON *parent, const ble_button_action_ma
     cJSON_AddNumberToObject(parent, "long_press", map->long_press);
 }
 
+static bool json_number_to_u32_exact(const cJSON *item, uint32_t max_value, uint32_t *out)
+{
+    if (!cJSON_IsNumber(item) || item->valuedouble < 0) return false;
+
+    uint32_t value = (uint32_t)item->valuedouble;
+    if (item->valuedouble != (double)value || value > max_value) return false;
+
+    if (out) *out = value;
+    return true;
+}
+
 static void fill_action_map_from_json(cJSON *obj, ble_button_action_map_t *out)
 {
     if (!out) return;
@@ -284,13 +295,13 @@ bool ble_access_parse_button_configs_json(const struct cJSON *buttons_item_obj,
     cJSON *item;
     cJSON_ArrayForEach(item, buttons_item) {
         cJSON *idx_item = cJSON_GetObjectItem(item, "idx");
-        if (!cJSON_IsNumber(idx_item)) {
+        uint32_t idx = 0;
+        if (!json_number_to_u32_exact(idx_item, BLE_ACCESS_MAX_BUTTONS - 1, &idx)) {
             if (out_error) *out_error = "button idx required";
             return false;
         }
 
-        int idx = (int)idx_item->valuedouble;
-        if (idx < 0 || idx >= button_count || idx >= BLE_ACCESS_MAX_BUTTONS) {
+        if (idx >= button_count || idx >= BLE_ACCESS_MAX_BUTTONS) {
             if (out_error) *out_error = "button idx out of range";
             return false;
         }
@@ -551,11 +562,17 @@ esp_err_t ble_access_backup_import(const struct cJSON *root_obj,
         strlcpy(device->label, cJSON_IsString(label) ? label->valuestring : "Device", sizeof(device->label));
         device->enabled = cJSON_IsBool(enabled) ? cJSON_IsTrue(enabled) : true;
         if (cJSON_IsNumber(last_counter)) {
-            device->last_counter = (uint32_t)last_counter->valuedouble;
+            uint32_t parsed_last_counter = 0;
+            if (!json_number_to_u32_exact(last_counter, UINT32_MAX, &parsed_last_counter)) {
+                if (out_error) *out_error = "invalid BLE last_counter in backup";
+                return ESP_ERR_INVALID_ARG;
+            }
+            device->last_counter = parsed_last_counter;
         }
 
-        int parsed_button_count = (int)button_count->valuedouble;
-        if (parsed_button_count < 1 || parsed_button_count > BLE_ACCESS_MAX_BUTTONS) {
+        uint32_t parsed_button_count = 0;
+        if (!json_number_to_u32_exact(button_count, BLE_ACCESS_MAX_BUTTONS, &parsed_button_count) ||
+                parsed_button_count == 0) {
             if (out_error) *out_error = "invalid BLE button_count in backup";
             return ESP_ERR_INVALID_ARG;
         }

@@ -55,6 +55,17 @@ static bool ensure_runtime_state(void)
     return s_op_mutex != NULL && s_actions_mutex != NULL && s_subs_mutex != NULL;
 }
 
+static bool json_number_to_u32_exact(const cJSON *item, uint32_t max_value, uint32_t *out)
+{
+    if (!cJSON_IsNumber(item) || item->valuedouble < 0) return false;
+
+    uint32_t value = (uint32_t)item->valuedouble;
+    if (item->valuedouble != (double)value || value > max_value) return false;
+
+    if (out) *out = value;
+    return true;
+}
+
 static bool load_saved_password(char *pass, size_t pass_len)
 {
     nvs_handle_t nvs;
@@ -602,9 +613,14 @@ esp_err_t mqtt_backup_import(const struct cJSON *root_obj)
             return ESP_ERR_INVALID_ARG;
         }
 
+        uint32_t port_value = 0;
+        if (!json_number_to_u32_exact(port, UINT16_MAX, &port_value)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
         char port_buf[8] = {0};
         char tls_buf[4] = {0};
-        snprintf(port_buf, sizeof(port_buf), "%d", (int)port->valuedouble);
+        snprintf(port_buf, sizeof(port_buf), "%u", (unsigned)port_value);
         strlcpy(tls_buf, cJSON_IsTrue(tls) ? "1" : "0", sizeof(tls_buf));
         xSemaphoreTake(s_op_mutex, portMAX_DELAY);
         esp_err_t err = save_config_snapshot_locked(host->valuestring,
@@ -623,10 +639,10 @@ esp_err_t mqtt_backup_import(const struct cJSON *root_obj)
         cJSON *item;
         cJSON_ArrayForEach(item, actions) {
             cJSON *idx = cJSON_GetObjectItem(item, "idx");
-            if (!cJSON_IsNumber(idx)) continue;
+            uint32_t action_idx = 0;
+            if (!json_number_to_u32_exact(idx, MQTT_MAX_ACTIONS - 1, &action_idx)) continue;
 
-            int action_idx = (int)idx->valuedouble;
-            if (action_idx < 0 || action_idx >= MQTT_MAX_ACTIONS) continue;
+            if (action_idx >= MQTT_MAX_ACTIONS) continue;
 
             cJSON *name = cJSON_GetObjectItem(item, "name");
             cJSON *topic = cJSON_GetObjectItem(item, "topic");
