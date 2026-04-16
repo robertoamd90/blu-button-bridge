@@ -586,8 +586,11 @@ esp_err_t mqtt_backup_import(const struct cJSON *root_obj)
     if (!root) return ESP_ERR_INVALID_ARG;
 
     cJSON *mqtt = cJSON_GetObjectItem(root, "mqtt");
+    cJSON *actions = cJSON_GetObjectItem(root, "mqtt_actions");
+    if ((cJSON_IsObject(mqtt) || cJSON_IsArray(actions)) && !ensure_runtime_state()) {
+        return ESP_ERR_NO_MEM;
+    }
     if (cJSON_IsObject(mqtt)) {
-        if (!ensure_runtime_state()) return ESP_ERR_NO_MEM;
 
         cJSON *host = cJSON_GetObjectItem(mqtt, "host");
         cJSON *port = cJSON_GetObjectItem(mqtt, "port");
@@ -613,7 +616,6 @@ esp_err_t mqtt_backup_import(const struct cJSON *root_obj)
         if (err != ESP_OK) return err;
     }
 
-    cJSON *actions = cJSON_GetObjectItem(root, "mqtt_actions");
     if (cJSON_IsArray(actions)) {
         mqtt_action_t next[MQTT_MAX_ACTIONS];
         memset(next, 0, sizeof(next));

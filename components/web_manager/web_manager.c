@@ -1275,54 +1275,12 @@ static esp_err_t read_gpio_action_body(httpd_req_t *req, char *body, size_t body
         send_error(req, "invalid json");
         return ESP_FAIL;
     }
-
-    cJSON *idx_item   = cJSON_GetObjectItem(root, "idx");
-    cJSON *name_item  = cJSON_GetObjectItem(root, "name");
-    cJSON *gpio_item  = cJSON_GetObjectItem(root, "gpio");
-    cJSON *idle_item  = cJSON_GetObjectItem(root, "idle_on");
-    cJSON *low_item   = cJSON_GetObjectItem(root, "active_low");
-    cJSON *act_item   = cJSON_GetObjectItem(root, "action");
-    cJSON *delay_item = cJSON_GetObjectItem(root, "restore_delay_ms");
-
-    if (require_idx && !cJSON_IsNumber(idx_item)) {
+    const char *error = NULL;
+    if (gpio_action_parse_json(root, out, idx_out, require_idx, &error) != ESP_OK) {
         cJSON_Delete(root);
-        send_error(req, "idx required");
+        send_error(req, error ? error : "invalid gpio action");
         return ESP_FAIL;
     }
-    if (!cJSON_IsString(name_item) || strlen(name_item->valuestring) == 0) {
-        cJSON_Delete(root);
-        send_error(req, "name required");
-        return ESP_FAIL;
-    }
-    if (!cJSON_IsNumber(gpio_item)) {
-        cJSON_Delete(root);
-        send_error(req, "gpio required");
-        return ESP_FAIL;
-    }
-    if (!cJSON_IsString(act_item)) {
-        cJSON_Delete(root);
-        send_error(req, "action required");
-        return ESP_FAIL;
-    }
-
-    gpio_action_kind_t action_kind;
-    if (!gpio_action_kind_parse(act_item->valuestring, &action_kind)) {
-        cJSON_Delete(root);
-        send_error(req, "action must be on, off, or toggle");
-        return ESP_FAIL;
-    }
-
-    memset(out, 0, sizeof(*out));
-    strlcpy(out->name, name_item->valuestring, sizeof(out->name));
-    out->gpio_num = (uint8_t)gpio_item->valuedouble;
-    out->idle_on = cJSON_IsTrue(idle_item);
-    out->active_low = cJSON_IsTrue(low_item);
-    out->action = (uint8_t)action_kind;
-    out->restore_delay_ms = cJSON_IsNumber(delay_item) && delay_item->valuedouble > 0
-                          ? (uint32_t)delay_item->valuedouble
-                          : 0;
-    if (idx_out) *idx_out = cJSON_IsNumber(idx_item) ? (int)idx_item->valuedouble : -1;
-
     cJSON_Delete(root);
     return ESP_OK;
 }
@@ -1821,6 +1779,7 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
 
     cJSON *version_item = cJSON_GetObjectItem(root, "version");
     if (!cJSON_IsNumber(version_item) ||
+            version_item->valuedouble != (double)version_item->valueint ||
             (int)version_item->valuedouble != CONFIG_BACKUP_VERSION) {
         cJSON_Delete(root);
         return send_error(req, "unsupported config backup version");

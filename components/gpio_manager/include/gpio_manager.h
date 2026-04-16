@@ -77,6 +77,15 @@ esp_err_t gpio_action_trigger(int idx);
 // Returns a cJSON array owned by the caller, or NULL on failure.
 struct cJSON *gpio_actions_export(void);
 
+// Parses a GPIO action JSON object used by the web API and backup payloads.
+// Returns ESP_OK on success and fills out/idx_out. On validation failure,
+// returns ESP_ERR_INVALID_ARG and optionally sets out_error.
+esp_err_t gpio_action_parse_json(const struct cJSON *item,
+                                 gpio_action_t *out,
+                                 int *idx_out,
+                                 bool require_idx,
+                                 const char **out_error);
+
 // Exports the allowed GPIO pin list used by the web API.
 // Returns a cJSON array owned by the caller, or NULL on failure.
 struct cJSON *gpio_pins_export(void);

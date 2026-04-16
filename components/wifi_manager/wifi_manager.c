@@ -45,7 +45,8 @@ static void wifi_worker_task(void *arg);
 static void ap_handoff_timer_cb(TimerHandle_t t);
 static bool wifi_reason_is_config_error(wifi_err_reason_t reason);
 static bool load_credentials(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
-static esp_err_t backup_load_credentials(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
+static esp_err_t wifi_credentials_read(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
+static esp_err_t wifi_credentials_write(const char *ssid, const char *pass);
 static void wifi_ap_load_defaults(wifi_ap_settings_t *cfg);
 static esp_err_t wifi_ap_read_config(wifi_ap_settings_t *cfg);
 static esp_err_t wifi_ap_store_config(const wifi_ap_settings_t *cfg);
@@ -211,23 +212,11 @@ static void on_wifi_disconnected(void *arg, esp_event_base_t base, int32_t id, v
 static bool load_credentials(char *ssid, size_t ssid_len,
                               char *pass, size_t pass_len)
 {
-    nvs_handle_t nvs;
-    if (nvs_open("wifi", NVS_READONLY, &nvs) != ESP_OK) return false;
-
-    ssid[0] = '\0';
-    pass[0] = '\0';
-
-    bool ok = (nvs_get_str(nvs, "ssid", ssid, &ssid_len) == ESP_OK &&
-               strlen(ssid) > 0);
-    if (ok) {
-        nvs_get_str(nvs, "pass", pass, &pass_len);
-    }
-
-    nvs_close(nvs);
-    return ok;
+    return wifi_credentials_read(ssid, ssid_len, pass, pass_len) == ESP_OK &&
+           ssid && ssid[0] != '\0';
 }
 
-static esp_err_t backup_load_credentials(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
+static esp_err_t wifi_credentials_read(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
 {
     if (!ssid || ssid_len == 0 || !pass || pass_len == 0) return ESP_ERR_INVALID_ARG;
 
@@ -254,6 +243,21 @@ static esp_err_t backup_load_credentials(char *ssid, size_t ssid_len, char *pass
 
     nvs_close(nvs);
     return (err != ESP_OK) ? err : pass_err;
+}
+
+static esp_err_t wifi_credentials_write(const char *ssid, const char *pass)
+{
+    if (!ssid || !pass) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("wifi", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) return err;
+
+    err = nvs_set_str(nvs, "ssid", ssid);
+    if (err == ESP_OK) err = nvs_set_str(nvs, "pass", pass);
+    if (err == ESP_OK) err = nvs_commit(nvs);
+    nvs_close(nvs);
+    return err;
 }
 
 static bool wifi_reason_is_config_error(wifi_err_reason_t reason)
@@ -381,30 +385,20 @@ static void wifi_connect(const char *ssid, const char *pass)
 void wifi_connect_api(const char *ssid, const char *pass, bool password_provided)
 {
     char pass_to_use[65] = {};
-    bool keep_existing_pass = false;
     if (!password_provided) {
         char saved_ssid[33] = {};
         char saved_pass[65] = {};
         if (load_credentials(saved_ssid, sizeof(saved_ssid), saved_pass, sizeof(saved_pass)) &&
                 strcmp(saved_ssid, ssid) == 0 &&
                 strlen(saved_pass) > 0) {
-            keep_existing_pass = true;
             strlcpy(pass_to_use, saved_pass, sizeof(pass_to_use));
         }
     } else {
         strlcpy(pass_to_use, pass, sizeof(pass_to_use));
     }
 
-    nvs_handle_t nvs;
-    if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
-        nvs_set_str(nvs, "ssid", ssid);
-        if (password_provided) {
-            nvs_set_str(nvs, "pass", pass);
-        } else if (!keep_existing_pass) {
-            nvs_set_str(nvs, "pass", "");
-        }
-        nvs_commit(nvs);
-        nvs_close(nvs);
+    if (wifi_credentials_write(ssid, pass_to_use) != ESP_OK) {
+        ESP_LOGW(TAG, "could not persist WiFi credentials");
     }
     wifi_connect(ssid, pass_to_use);
 }
@@ -768,7 +762,7 @@ struct cJSON *wifi_config_export(wifi_export_view_t view)
 
     char ssid[33] = {0};
     char pass[65] = {0};
-    esp_err_t err = backup_load_credentials(ssid, sizeof(ssid), pass, sizeof(pass));
+    esp_err_t err = wifi_credentials_read(ssid, sizeof(ssid), pass, sizeof(pass));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "could not snapshot WiFi config for export: %s", esp_err_to_name(err));
         cJSON_Delete(wifi);
@@ -872,16 +866,7 @@ esp_err_t wifi_backup_import(const struct cJSON *root_obj)
             return ESP_ERR_INVALID_ARG;
         }
 
-        nvs_handle_t h;
-        esp_err_t err = nvs_open("wifi", NVS_READWRITE, &h);
-        if (err != ESP_OK) return err;
-
-        err = nvs_set_str(h, "ssid", ssid->valuestring);
-        if (err == ESP_OK) err = nvs_set_str(h, "pass", pass->valuestring);
-        if (err == ESP_OK) {
-            err = nvs_commit(h);
-        }
-        nvs_close(h);
+        esp_err_t err = wifi_credentials_write(ssid->valuestring, pass->valuestring);
         if (err != ESP_OK) return err;
     }
 

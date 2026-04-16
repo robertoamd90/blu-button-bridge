@@ -204,6 +204,86 @@ static cJSON *action_export_json(const gpio_action_t *action, int idx)
     return item;
 }
 
+static bool json_number_to_int_exact(const cJSON *item, int *out)
+{
+    if (!cJSON_IsNumber(item)) return false;
+    if (item->valuedouble != (double)item->valueint) return false;
+    if (out) *out = item->valueint;
+    return true;
+}
+
+esp_err_t gpio_action_parse_json(const struct cJSON *item,
+                                 gpio_action_t *out,
+                                 int *idx_out,
+                                 bool require_idx,
+                                 const char **out_error)
+{
+    if (!item || !out) {
+        if (out_error) *out_error = "invalid gpio action";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    cJSON *idx_item = cJSON_GetObjectItem((cJSON *)item, "idx");
+    cJSON *name_item = cJSON_GetObjectItem((cJSON *)item, "name");
+    cJSON *gpio_item = cJSON_GetObjectItem((cJSON *)item, "gpio");
+    cJSON *idle_item = cJSON_GetObjectItem((cJSON *)item, "idle_on");
+    cJSON *low_item = cJSON_GetObjectItem((cJSON *)item, "active_low");
+    cJSON *act_item = cJSON_GetObjectItem((cJSON *)item, "action");
+    cJSON *delay_item = cJSON_GetObjectItem((cJSON *)item, "restore_delay_ms");
+
+    int idx = -1;
+    if (require_idx && !json_number_to_int_exact(idx_item, &idx)) {
+        if (out_error) *out_error = "idx required";
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!cJSON_IsString(name_item) || name_item->valuestring[0] == '\0') {
+        if (out_error) *out_error = "name required";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int gpio_num = -1;
+    if (!json_number_to_int_exact(gpio_item, &gpio_num)) {
+        if (out_error) *out_error = "gpio required";
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (gpio_num < 0 || gpio_num > UINT8_MAX) {
+        if (out_error) *out_error = "invalid gpio action";
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!cJSON_IsString(act_item)) {
+        if (out_error) *out_error = "action required";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    gpio_action_kind_t action_kind;
+    if (!gpio_action_kind_parse(act_item->valuestring, &action_kind)) {
+        if (out_error) *out_error = "action must be on, off, or toggle";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(out, 0, sizeof(*out));
+    strlcpy(out->name, name_item->valuestring, sizeof(out->name));
+    out->gpio_num = (uint8_t)gpio_num;
+    out->idle_on = cJSON_IsTrue(idle_item);
+    out->active_low = cJSON_IsTrue(low_item);
+    out->action = (uint8_t)action_kind;
+
+    int restore_delay_ms = 0;
+    if (json_number_to_int_exact(delay_item, &restore_delay_ms) && restore_delay_ms > 0) {
+        out->restore_delay_ms = (uint32_t)restore_delay_ms;
+    }
+
+    if (idx_out) {
+        if (json_number_to_int_exact(idx_item, &idx)) {
+            *idx_out = idx;
+        } else {
+            *idx_out = -1;
+        }
+    }
+
+    return ESP_OK;
+}
+
 static esp_err_t validate_action_candidate(const gpio_action_t actions[GPIO_ACTION_MAX],
                                            const gpio_action_t *action,
                                            int idx)
@@ -637,37 +717,11 @@ esp_err_t gpio_backup_import(const struct cJSON *root_obj)
 
     cJSON *item;
     cJSON_ArrayForEach(item, actions) {
-        cJSON *idx = cJSON_GetObjectItem(item, "idx");
-        cJSON *name = cJSON_GetObjectItem(item, "name");
-        if (!cJSON_IsNumber(idx) || !cJSON_IsString(name) || name->valuestring[0] == '\0') continue;
-
-        int action_idx = (int)idx->valuedouble;
+        gpio_action_t parsed = {0};
+        int action_idx = -1;
+        if (gpio_action_parse_json(item, &parsed, &action_idx, true, NULL) != ESP_OK) continue;
         if (action_idx < 0 || action_idx >= GPIO_ACTION_MAX) continue;
-
-        cJSON *gpio = cJSON_GetObjectItem(item, "gpio");
-        cJSON *idle_on = cJSON_GetObjectItem(item, "idle_on");
-        cJSON *active_low = cJSON_GetObjectItem(item, "active_low");
-        cJSON *kind = cJSON_GetObjectItem(item, "action");
-        cJSON *restore_delay_ms = cJSON_GetObjectItem(item, "restore_delay_ms");
-        if (!cJSON_IsNumber(gpio) || !cJSON_IsString(kind)) continue;
-
-        gpio_action_t *action = &next[action_idx];
-        memset(action, 0, sizeof(*action));
-        strlcpy(action->name, name->valuestring, sizeof(action->name));
-
-        action->gpio_num = (uint8_t)gpio->valuedouble;
-        if (cJSON_IsBool(idle_on)) action->idle_on = cJSON_IsTrue(idle_on);
-        if (cJSON_IsBool(active_low)) action->active_low = cJSON_IsTrue(active_low);
-        gpio_action_kind_t parsed_kind;
-        if (gpio_action_kind_parse(kind->valuestring, &parsed_kind)) {
-            action->action = (uint8_t)parsed_kind;
-        } else {
-            memset(action, 0, sizeof(*action));
-            continue;
-        }
-        if (cJSON_IsNumber(restore_delay_ms) && restore_delay_ms->valuedouble > 0) {
-            action->restore_delay_ms = (uint32_t)restore_delay_ms->valuedouble;
-        }
+        next[action_idx] = parsed;
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
