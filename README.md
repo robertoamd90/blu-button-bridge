@@ -204,6 +204,12 @@ The firmware OTA flow likewise expects board-specific OTA assets:
 - `BluButtonBridge-esp32-devkit-v1.bin`
 - `BluButtonBridge-esp32c3-supermini.bin`
 
+The GitHub Pages deploy now mirrors both asset classes into the published site:
+
+- board-specific full images under `./firmware/`
+- board-specific OTA images under `./firmware/`
+- a site-hosted `./ota-manifest.json` generated during the Pages deploy and consumed by the device update check before rebooting into OTA mode
+
 For local release packaging from existing build output:
 
 ```bash
@@ -211,7 +217,7 @@ source ~/esp/esp-idf-v6.0/export.sh
 scripts/package-release.sh all
 ```
 
-Board metadata for build aliases, installer options, and release asset naming is centralized in `config/boards.json`. The firmware OTA lookup consumes that same catalog through a generated OTA release profile during CMake configure, and the Pages workflow copies it into the published site as `boards.json`.
+Board metadata for build aliases, installer options, and release asset naming is centralized in `config/boards.json`. The firmware OTA lookup consumes that same catalog through a generated OTA release profile during CMake configure, and the Pages workflow copies it into the published site as `boards.json` while mirroring the matching OTA/full firmware payloads.
 
 ## Troubleshooting
 

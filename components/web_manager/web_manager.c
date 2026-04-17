@@ -34,10 +34,11 @@ static const char *AUTH_NS = "http_auth";
 #define AUTH_PASS_MAX     64
 #define AUTH_HASH_HEX_LEN 65
 #define CONFIG_BACKUP_VERSION 3
-#define GITHUB_HTTP_BUFFER_SIZE    8192
-#define GITHUB_HTTP_TX_BUFFER_SIZE 1024
-#define GITHUB_HTTP_MAX_REDIRECTS  5
-static const char *OTA_MANIFEST_URL = "https://github.com/robertoamd90/blu-button-bridge/releases/latest/download/ota-manifest.json";
+#define OTA_MANIFEST_HTTP_BUFFER_SIZE    2048
+#define OTA_MANIFEST_HTTP_TX_BUFFER_SIZE 512
+#define OTA_MANIFEST_HTTP_MAX_REDIRECTS  5
+#define HTTP_BUFFER_INITIAL_CAPACITY     2048
+static const char *OTA_MANIFEST_URL = "https://robertoamd90.github.io/blu-button-bridge/ota-manifest.json";
 
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
@@ -383,9 +384,9 @@ typedef struct {
     char download_url[512];
     char digest_hex[65];
     int asset_size;
-} github_release_info_t;
+} ota_release_info_t;
 
-static github_release_info_t s_last_github_release = {0};
+static ota_release_info_t s_last_ota_release = {0};
 
 typedef struct {
     httpd_req_t *req;
@@ -453,7 +454,7 @@ static int compare_versions_for_update(const char *candidate, const char *curren
     return 0;
 }
 
-static bool parse_github_digest(const char *digest, char *out_hex, size_t out_len)
+static bool parse_release_digest(const char *digest, char *out_hex, size_t out_len)
 {
     if (!digest || !out_hex || out_len < 65) return false;
     const char *prefix = "sha256:";
@@ -478,7 +479,7 @@ static esp_err_t http_buffer_event_handler(esp_http_client_event_t *evt)
     if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data_len > 0) {
         size_t needed = buffer->len + (size_t)evt->data_len + 1;
         if (needed > buffer->cap) {
-            size_t new_cap = (buffer->cap > 0) ? buffer->cap : 4096;
+            size_t new_cap = (buffer->cap > 0) ? buffer->cap : HTTP_BUFFER_INITIAL_CAPACITY;
             while (new_cap < needed) new_cap *= 2;
             char *new_buf = realloc(buffer->buf, new_cap);
             if (!new_buf) {
@@ -496,7 +497,7 @@ static esp_err_t http_buffer_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
-static esp_err_t github_http_get_json(const char *url, http_buffer_t *buffer)
+static esp_err_t ota_manifest_http_get_json(const char *url, http_buffer_t *buffer)
 {
     if (!url || !buffer) return ESP_ERR_INVALID_ARG;
 
@@ -510,9 +511,9 @@ static esp_err_t github_http_get_json(const char *url, http_buffer_t *buffer)
         .url = url,
         .method = HTTP_METHOD_GET,
         .timeout_ms = 15000,
-        .buffer_size = GITHUB_HTTP_BUFFER_SIZE,
-        .buffer_size_tx = GITHUB_HTTP_TX_BUFFER_SIZE,
-        .max_redirection_count = GITHUB_HTTP_MAX_REDIRECTS,
+        .buffer_size = OTA_MANIFEST_HTTP_BUFFER_SIZE,
+        .buffer_size_tx = OTA_MANIFEST_HTTP_TX_BUFFER_SIZE,
+        .max_redirection_count = OTA_MANIFEST_HTTP_MAX_REDIRECTS,
         .event_handler = http_buffer_event_handler,
         .user_data = buffer,
         .crt_bundle_attach = esp_crt_bundle_attach,
@@ -535,7 +536,7 @@ static esp_err_t github_http_get_json(const char *url, http_buffer_t *buffer)
     return ESP_OK;
 }
 
-static esp_err_t github_fetch_latest_release(github_release_info_t *info)
+static esp_err_t ota_manifest_fetch_latest_release(ota_release_info_t *info)
 {
     if (!info) return ESP_ERR_INVALID_ARG;
     memset(info, 0, sizeof(*info));
@@ -547,7 +548,7 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
 
     http_buffer_t buffer = {0};
 
-    esp_err_t err = github_http_get_json(OTA_MANIFEST_URL, &buffer);
+    esp_err_t err = ota_manifest_http_get_json(OTA_MANIFEST_URL, &buffer);
     if (err != ESP_OK) {
         free(buffer.buf);
         return err;
@@ -581,7 +582,7 @@ static esp_err_t github_fetch_latest_release(github_release_info_t *info)
     cJSON *size = cJSON_GetObjectItem(board, "asset_size");
     if (!cJSON_IsString(name) || strcmp(name->valuestring, expected_asset_name) != 0 ||
         !cJSON_IsString(download_url) || !cJSON_IsString(digest) || !cJSON_IsNumber(size) ||
-        !parse_github_digest(digest->valuestring, info->digest_hex, sizeof(info->digest_hex))) {
+        !parse_release_digest(digest->valuestring, info->digest_hex, sizeof(info->digest_hex))) {
         cJSON_Delete(root);
         return ESP_ERR_NOT_FOUND;
     }
@@ -1588,22 +1589,22 @@ static void ota_unlock(void)
 static esp_err_t handle_update_check(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
-    // Intentionally close active console streams before the GitHub check.
+    // Intentionally close active console streams before the OTA manifest check.
     // With the SSE console viewer still attached, free heap can drop enough
     // to make the outbound HTTPS/TLS setup unreliable for update verification.
     // The short delay gives the replaced stream time to unwind and release memory.
     const char *expected_asset_name = ota_release_profile_ota_asset_name();
     console_stream_close_all();
     vTaskDelay(pdMS_TO_TICKS(300));
-    github_release_info_t release;
-    esp_err_t err = github_fetch_latest_release(&release);
+    ota_release_info_t release;
+    esp_err_t err = ota_manifest_fetch_latest_release(&release);
     if (err == ESP_ERR_NOT_FOUND) {
         char msg[160];
         snprintf(msg, sizeof(msg), "latest release is missing %s or its sha256 digest",
                  expected_asset_name ? expected_asset_name : "the expected OTA asset");
         return send_error(req, msg);
     }
-    if (err != ESP_OK) return send_error(req, "could not fetch latest GitHub release");
+    if (err != ESP_OK) return send_error(req, "could not fetch latest OTA manifest");
 
     char current_version[40];
     format_version_label(app->version, current_version, sizeof(current_version));
@@ -1616,7 +1617,7 @@ static esp_err_t handle_update_check(httpd_req_t *req)
     cJSON_AddStringToObject(obj, "release_url", release.html_url);
     cJSON_AddStringToObject(obj, "asset_name", release.asset_name);
     cJSON_AddNumberToObject(obj, "asset_size", release.asset_size);
-    s_last_github_release = release;
+    s_last_ota_release = release;
     send_cjson(req, obj);
     return ESP_OK;
 }
@@ -1675,22 +1676,22 @@ static esp_err_t handle_update_install(httpd_req_t *req)
 {
     if (!ota_try_lock()) return send_error(req, "another OTA operation is already in progress");
 
-    if (!s_last_github_release.download_url[0] || !s_last_github_release.tag[0]) {
+    if (!s_last_ota_release.download_url[0] || !s_last_ota_release.tag[0]) {
         ota_unlock();
         return send_error(req, "check for updates first");
     }
 
     const esp_app_desc_t *app = esp_app_get_description();
-    if (compare_versions_for_update(s_last_github_release.tag, app->version) <= 0) {
+    if (compare_versions_for_update(s_last_ota_release.tag, app->version) <= 0) {
         ota_unlock();
-        return send_error(req, "no newer GitHub release is available");
+        return send_error(req, "no newer published update is available");
     }
 
-    esp_err_t err = ota_manager_stage_github_job(s_last_github_release.version_label,
-                                                 s_last_github_release.download_url,
-                                                 s_last_github_release.digest_hex);
+    esp_err_t err = ota_manager_stage_github_job(s_last_ota_release.version_label,
+                                                 s_last_ota_release.download_url,
+                                                 s_last_ota_release.digest_hex);
     ota_unlock();
-    if (err != ESP_OK) return send_error(req, "could not stage GitHub OTA");
+    if (err != ESP_OK) return send_error(req, "could not stage OTA update");
 
     return send_ok_and_start_task(req, reboot_task, "reboot", "could not schedule reboot");
 }

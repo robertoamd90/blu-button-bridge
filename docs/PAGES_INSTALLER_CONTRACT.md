@@ -1,6 +1,6 @@
 # Pages Installer Contract
 
-This document captures the contract between the GitHub release assets, the GitHub Pages workflow, and the browser installer site.
+This document captures the contract between the GitHub release assets, the GitHub Pages workflow, the browser installer site, and the device OTA mirror published on GitHub Pages.
 
 ## Scope
 
@@ -53,6 +53,21 @@ This matters because:
 - the browser installer manifest points at the mirrored same-origin copy
 - if the latest release is missing that asset, browser install is blocked
 
+## OTA mirror contract
+
+The device OTA flow depends on the board-specific OTA image, not the full flash image.
+
+Expected release assets:
+
+- `BluButtonBridge-esp32-devkit-v1.bin`
+- `BluButtonBridge-esp32c3-supermini.bin`
+
+This matters because:
+
+- the Pages workflow mirrors that file into the published site payload
+- the published site also exposes `./ota-manifest.json` for the device update check
+- the staged OTA flow then downloads the mirrored same-origin OTA binary from `./firmware/`
+
 ## Pages workflow contract
 
 Current workflow behavior in `.github/workflows/pages.yml`:
@@ -61,8 +76,9 @@ Current workflow behavior in `.github/workflows/pages.yml`:
 - checks out the repository
 - copies `site/` into `_site/`
 - reads `config/boards.json`
-- downloads every board-specific full image declared there from the just-published release into `_site/firmware/`
+- downloads every board-specific full image and OTA image declared there from the just-published release into `_site/firmware/`
 - copies that shared catalog to `_site/boards.json`
+- writes the device OTA manifest to `_site/ota-manifest.json` from the release metadata and board catalog
 - uploads `_site/` as the Pages artifact
 - deploys that artifact to GitHub Pages
 
@@ -72,6 +88,9 @@ Expected published payload includes:
 - mirrored firmware at:
   - `./firmware/BluButtonBridge-esp32-devkit-v1-full.bin`
   - `./firmware/BluButtonBridge-esp32c3-supermini-full.bin`
+  - `./firmware/BluButtonBridge-esp32-devkit-v1.bin`
+  - `./firmware/BluButtonBridge-esp32c3-supermini.bin`
+- OTA manifest at `./ota-manifest.json`
 - mirror metadata at `./firmware/metadata.json`
 
 ## Browser-side manifest contract
@@ -91,6 +110,20 @@ Current `site/app.js` behavior:
 - compares the latest release asset digest with the mirrored asset digest before allowing browser install
 
 The actual install button flashes the same-origin mirrored full image for the selected board, not a GitHub asset URL directly.
+
+## Device OTA manifest contract
+
+Current firmware OTA behavior:
+
+- `GET /api/system/update/check` reads `https://robertoamd90.github.io/blu-button-bridge/ota-manifest.json`
+- the manifest carries release tag, release URL, board-specific OTA asset name, size, SHA-256, and mirrored Pages download URL
+- `POST /api/system/update` stages that mirrored board-specific OTA URL for download after reboot
+- OTA mode then downloads the board-specific `.bin` from `./firmware/`
+
+Operational note:
+
+- update visibility now follows the published GitHub Pages mirror, not the instant the GitHub release appears
+- the GitHub release no longer needs to ship `ota-manifest.json`; the Pages deploy generates and publishes the manifest consumed by current firmware
 
 ## Release metadata and fallback behavior
 
@@ -148,6 +181,8 @@ Before changing the installer flow, verify:
 - whether `config/boards.json` still matches the supported boards and release asset names
 - whether the required release asset name is changing
 - whether the workflow still mirrors the full image into `./firmware/`
+- whether the workflow still mirrors the OTA image into `./firmware/`
+- whether the workflow still publishes `./ota-manifest.json`
 - whether the workflow also writes matching metadata into `./firmware/metadata.json`
 - whether the browser manifest still points at a same-origin copy
 - whether the browser still compares release digest vs mirrored digest before enabling install
@@ -157,6 +192,7 @@ If you change:
 
 - the release asset name
 - the mirrored firmware path
+- the OTA manifest path
 - the published Pages URL
 - the fallback behavior
 - the board or flash assumptions shown on the installer page
@@ -177,6 +213,7 @@ When touching the Pages installer flow, validate at least:
 - the README installer link is clickable and points to the expected public URL
 - `site/` still renders with no broken local asset references
 - the install button manifest points at the selected board's mirrored firmware path
+- the device OTA manifest points at the selected board's mirrored OTA firmware path
 - the happy path works when the latest release includes the required asset
 - the happy path confirms digest match between GitHub metadata and mirrored metadata
 - the metadata-fallback path still leaves the install button usable

@@ -127,8 +127,8 @@ Important behavior:
 
 - this call also caches the latest checked release in RAM inside `web_manager`
 - `POST /api/system/update` depends on that cached result
-- the latest release metadata now comes from a lightweight `ota-manifest.json` asset attached to the latest GitHub release
-- the staged OTA download still installs the board-specific `.bin` asset from that same GitHub release
+- the latest release metadata now comes from the site-hosted `https://robertoamd90.github.io/blu-button-bridge/ota-manifest.json`
+- the staged OTA download installs the board-specific mirrored `.bin` from that same GitHub Pages site
 
 ### `POST /api/system/update`
 
@@ -141,7 +141,7 @@ Request body:
 Behavior:
 
 - requires a successful prior `GET /api/system/update/check`
-- stages a GitHub OTA job in NVS through `ota_manager`
+- stages a board-specific OTA job in NVS through `ota_manager`
 - does **not** download immediately inside the HTTP request
 - reboots the device into OTA mode
 
@@ -231,13 +231,14 @@ Current failure reasons written in practice:
 - `wifi_timeout`
 - `install_failed`
 
-GitHub OTA external contract:
+Published OTA external contract:
 
-- source repo: this repository's GitHub releases
+- discovery source: `https://robertoamd90.github.io/blu-button-bridge/ota-manifest.json`
+- download source: board-specific mirrored OTA binaries on the same GitHub Pages site
 - asset selection is board-specific:
   - `BluButtonBridge-esp32-devkit-v1.bin`
   - `BluButtonBridge-esp32c3-supermini.bin`
-- trust/check source: GitHub-provided SHA-256 digest from the release metadata path already used by `web_manager`
+- trust/check source: SHA-256 digests carried by the published OTA manifest and verified again after download
 - success path:
   - stage job
   - reboot to OTA mode

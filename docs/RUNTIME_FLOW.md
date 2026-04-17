@@ -140,7 +140,7 @@ HTTP/UI phase:
 
 1. UI calls `GET /api/system/update/check`
 2. `web_manager` first closes active console SSE viewers and waits briefly for them to unwind
-3. `web_manager` fetches the latest GitHub release `ota-manifest.json` asset
+3. `web_manager` fetches the latest GitHub Pages `ota-manifest.json`
 4. selected release info is cached in RAM
 5. UI calls `POST /api/system/update`
 6. `web_manager` stages the OTA job in NVS via `ota_manager_stage_github_job(...)`
@@ -150,19 +150,19 @@ Important note:
 
 - closing console viewers during `GET /api/system/update/check` is intentional
 - reason:
-  - an attached console SSE session can leave too little free heap for reliable outbound GitHub HTTPS/TLS setup
+  - an attached console SSE session can leave too little free heap for reliable outbound HTTPS/TLS setup
   - the brief wait allows the replaced stream to release memory before the update check continues
 
 Manifest contract:
 
-- the latest GitHub release must include an `ota-manifest.json` asset
+- the latest published GitHub Pages site must expose `https://robertoamd90.github.io/blu-button-bridge/ota-manifest.json`
 - that manifest carries:
   - release tag
   - release URL
   - board-specific OTA asset name
   - board-specific OTA asset size
   - board-specific OTA asset SHA-256
-  - board-specific OTA download URL
+  - board-specific OTA download URL under the same Pages site
 - `web_manager` reads only that lightweight manifest before reboot
 - `ota_manager` still downloads and verifies the actual staged OTA `.bin` after reboot
 

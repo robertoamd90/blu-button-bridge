@@ -42,14 +42,22 @@ jobs:
           TAG="$RELEASE_TAG"
           BOARD_CATALOG="config/boards.json"
           RELEASE_JSON="$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}")"
+          PAGES_BASE="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
           printf '%s' "$RELEASE_JSON" | jq -e --slurpfile boards "$BOARD_CATALOG" '
             . as $release
             | all(
                 $boards[0].boards[];
                 . as $board
-                | any(
-                    $release.assets[];
-                    .name == $board.full_asset_name and .digest and .browser_download_url
+                | (
+                    any(
+                      $release.assets[];
+                      .name == $board.full_asset_name and .digest and .browser_download_url
+                    )
+                    and
+                    any(
+                      $release.assets[];
+                      .name == $board.ota_asset_name and .digest and .browser_download_url
+                    )
                   )
               )
           ' >/dev/null
@@ -64,9 +72,9 @@ jobs:
               --repo "${{ github.repository }}" \
               --pattern "$asset_name" \
               --dir _site/firmware
-          done < <(jq -r '.boards[].full_asset_name' "$BOARD_CATALOG")
+          done < <(jq -r '.boards[] | [.full_asset_name, .ota_asset_name] | .[]' "$BOARD_CATALOG")
 
-          printf '%s' "$RELEASE_JSON" | jq -c --slurpfile boards "$BOARD_CATALOG" '
+          printf '%s' "$RELEASE_JSON" | jq -c --arg pages_base "$PAGES_BASE" --slurpfile boards "$BOARD_CATALOG" '
             . as $release
             | {
                 tag: $release.tag_name,
@@ -85,7 +93,23 @@ jobs:
                                 asset_name: .name,
                                 asset_size: .size,
                                 asset_sha256: .digest,
-                                browser_download_url: .browser_download_url
+                                browser_download_url: .browser_download_url,
+                                ota_asset_name: (
+                                  $release.assets[]
+                                  | select(.name == $board.ota_asset_name)
+                                  | .name
+                                ),
+                                ota_asset_size: (
+                                  $release.assets[]
+                                  | select(.name == $board.ota_asset_name)
+                                  | .size
+                                ),
+                                ota_asset_sha256: (
+                                  $release.assets[]
+                                  | select(.name == $board.ota_asset_name)
+                                  | .digest
+                                ),
+                                ota_browser_download_url: ($pages_base + "/firmware/" + $board.ota_asset_name)
                               }
                           )
                       )
@@ -94,6 +118,35 @@ jobs:
                 )
               }
           ' > _site/firmware/metadata.json
+
+          printf '%s' "$RELEASE_JSON" | jq -c --arg pages_base "$PAGES_BASE" --slurpfile boards "$BOARD_CATALOG" '
+            . as $release
+            | {
+                schema_version: 1,
+                tag: $release.tag_name,
+                html_url: $release.html_url,
+                boards: (
+                  $boards[0].boards
+                  | map({
+                      key: .id,
+                      value: (
+                        . as $board
+                        | (
+                            $release.assets[]
+                            | select(.name == $board.ota_asset_name)
+                            | {
+                                asset_name: .name,
+                                asset_size: .size,
+                                asset_sha256: .digest,
+                                browser_download_url: ($pages_base + "/firmware/" + $board.ota_asset_name)
+                              }
+                          )
+                      )
+                    })
+                  | from_entries
+                )
+              }
+          ' > _site/ota-manifest.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

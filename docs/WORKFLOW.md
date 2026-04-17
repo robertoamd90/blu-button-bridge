@@ -280,7 +280,6 @@ When preparing a release:
    - `BluButtonBridge-esp32-devkit-v1-full.bin`
    - `BluButtonBridge-esp32c3-supermini.bin`
    - `BluButtonBridge-esp32c3-supermini-full.bin`
-   - `ota-manifest.json`
 9. record SHA-256 checksums for all uploaded binaries
 10. write GitHub release notes using the standard repo format:
    - `## Changes`
@@ -304,7 +303,8 @@ Why the tag comes before the build:
 - `BluButtonBridge-esp32-devkit-v1-full.bin` is the full flash image for the ESP32 DevKit V1 profile
 - `BluButtonBridge-esp32c3-supermini.bin` is the OTA binary for the ESP32-C3 SuperMini profile
 - `BluButtonBridge-esp32c3-supermini-full.bin` is the full flash image for the ESP32-C3 SuperMini profile
-- `ota-manifest.json` is the lightweight staged-OTA manifest consumed by the firmware before rebooting into OTA mode
+- the GitHub release no longer ships `ota-manifest.json`
+- the current firmware OTA check consumes the Pages-hosted `https://robertoamd90.github.io/blu-button-bridge/ota-manifest.json`
 - `dist/` is local generated output and should remain untracked unless explicitly requested otherwise
 
 ### Release note style
@@ -324,6 +324,7 @@ Use `## Notes` only for short exceptional context such as:
 - migration steps
 - known limits
 - deprecation warnings
+- one-time manual OTA steps required for older firmware after an OTA flow change
 
 ## 5. UI / UX guardrails
 

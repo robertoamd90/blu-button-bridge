@@ -87,7 +87,7 @@ Current model:
 
 Additional runtime interaction:
 
-- `GET /api/system/update/check` intentionally closes active console viewers before performing the GitHub HTTPS check
+- `GET /api/system/update/check` intentionally closes active console viewers before performing the OTA manifest HTTPS check
 - reason:
   - keeping the SSE console attached can reduce free heap enough to make outbound update-check TLS setup unreliable
 
