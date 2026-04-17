@@ -156,7 +156,7 @@ static esp_err_t persist_job_runtime_state(const ota_job_t *job)
     return err;
 }
 
-esp_err_t ota_manager_stage_github_job(const char *version_label,
+esp_err_t ota_manager_stage_update_job(const char *version_label,
                                        const char *download_url,
                                        const char *digest_hex)
 {
@@ -389,7 +389,7 @@ static esp_err_t wait_for_wifi_up(void)
     return ESP_ERR_TIMEOUT;
 }
 
-static esp_err_t run_pending_github_job(void)
+static esp_err_t run_pending_update_job(void)
 {
     ensure_boot_job_loaded();
     if (!s_boot_job_valid) return ESP_ERR_NOT_FOUND;
@@ -426,7 +426,7 @@ static esp_err_t run_pending_github_job(void)
         return err;
     }
 
-    ESP_LOGI(TAG, "Installing staged GitHub update %s", job.version);
+    ESP_LOGI(TAG, "Installing staged OTA update %s", job.version);
     err = ota_install_from_job(&job);
     if (err != ESP_OK) {
         mark_job_failure(&job, "install_failed");
@@ -443,7 +443,7 @@ static esp_err_t run_pending_github_job(void)
 static void ota_mode_task(void *arg)
 {
     (void)arg;
-    esp_err_t err = run_pending_github_job();
+    esp_err_t err = run_pending_update_job();
     ESP_LOGE(TAG, "OTA mode failed: %s", esp_err_to_name(err));
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();

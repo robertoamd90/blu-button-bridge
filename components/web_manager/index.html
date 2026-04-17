@@ -389,17 +389,17 @@
   <div class="card">
     <h2>Firmware Update (OTA)</h2>
     <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:.75rem">
-      Install the latest public GitHub release after SHA-256 verification, or upload a firmware binary manually. The device will reboot after a successful update.
+      Install the latest published firmware from the OTA mirror after SHA-256 verification, or upload a firmware binary manually. The device will reboot after a successful update.
     </p>
-    <div style="font-size:.82rem;font-weight:700;margin-bottom:.35rem">From GitHub release</div>
-    <div style="font-size:.9rem;margin-bottom:.35rem">Current version: <strong id="gh-current-version">…</strong></div>
-    <div style="font-size:.9rem;margin-bottom:.35rem">Latest release: <strong id="gh-latest-version">Not checked</strong></div>
-    <div style="font-size:.85rem;color:var(--text-muted);margin-bottom:.75rem" id="gh-update-status">Run a manual check to look for updates.</div>
+    <div style="font-size:.82rem;font-weight:700;margin-bottom:.35rem">From OTA mirror</div>
+    <div style="font-size:.9rem;margin-bottom:.35rem">Current version: <strong id="staged-current-version">…</strong></div>
+    <div style="font-size:.9rem;margin-bottom:.35rem">Latest release: <strong id="staged-latest-version">Not checked</strong></div>
+    <div style="font-size:.85rem;color:var(--text-muted);margin-bottom:.75rem" id="staged-update-status">Run a manual check to look for updates.</div>
     <div class="row" style="margin-bottom:.85rem">
-      <button class="btn btn-secondary" onclick="githubUpdateCheck()">Check for Updates</button>
-      <button class="btn btn-primary" id="gh-update-install-btn" onclick="githubUpdateInstall()" style="display:none">Install Update</button>
+      <button class="btn btn-secondary" onclick="stagedUpdateCheck()">Check for Updates</button>
+      <button class="btn btn-primary" id="staged-update-install-btn" onclick="stagedUpdateInstall()" style="display:none">Install Update</button>
     </div>
-    <div id="toast-gh-update" class="toast" style="margin-bottom:.85rem"></div>
+    <div id="toast-staged-update" class="toast" style="margin-bottom:.85rem"></div>
     <div style="height:1px;background:var(--border);margin:.9rem 0"></div>
     <div style="font-size:.82rem;font-weight:700;margin-bottom:.35rem">Manual upload</div>
     <input id="ota-file" type="file" accept=".bin" style="margin-bottom:.75rem">
@@ -668,7 +668,7 @@
       setStatus('d-ble',  't-ble',  'BLE',  d.ble);
       if (d.fw_version) {
         const version = 'v' + d.fw_version;
-        document.getElementById('gh-current-version').textContent = version;
+        document.getElementById('staged-current-version').textContent = version;
       }
     } catch(e) {}
   }
@@ -1170,12 +1170,12 @@
 
   // ── OTA ───────────────────────────────────────────────────────────────────
 
-  let _githubUpdateInfo = null;
+  let _stagedUpdateInfo = null;
 
-  function setGithubUpdateUi(data) {
-    const latestEl = document.getElementById('gh-latest-version');
-    const statusEl = document.getElementById('gh-update-status');
-    const installBtn = document.getElementById('gh-update-install-btn');
+  function setStagedUpdateUi(data) {
+    const latestEl = document.getElementById('staged-latest-version');
+    const statusEl = document.getElementById('staged-update-status');
+    const installBtn = document.getElementById('staged-update-install-btn');
 
     if (!data) {
       latestEl.textContent = 'Not checked';
@@ -1194,42 +1194,42 @@
     }
   }
 
-  async function githubUpdateCheck() {
-    _githubUpdateInfo = null;
-    setGithubUpdateUi(null);
-    toast('toast-gh-update', true, 'Checking OTA mirror…');
+  async function stagedUpdateCheck() {
+    _stagedUpdateInfo = null;
+    setStagedUpdateUi(null);
+    toast('toast-staged-update', true, 'Checking OTA mirror…');
     try {
       const d = await (await fetch('/api/system/update/check')).json();
       if (!d.ok) {
-        toast('toast-gh-update', false, d.error || 'Update check failed');
+        toast('toast-staged-update', false, d.error || 'Update check failed');
         return;
       }
-      _githubUpdateInfo = d;
-      setGithubUpdateUi(d);
-      toast('toast-gh-update', true, d.update_available ? 'New firmware available' : 'Already up to date');
+      _stagedUpdateInfo = d;
+      setStagedUpdateUi(d);
+      toast('toast-staged-update', true, d.update_available ? 'New firmware available' : 'Already up to date');
     } catch(e) {
-      toast('toast-gh-update', false, 'Could not check OTA mirror right now');
+      toast('toast-staged-update', false, 'Could not check OTA mirror right now');
     }
   }
 
-  async function githubUpdateInstall() {
-    if (!_githubUpdateInfo || !_githubUpdateInfo.update_available) {
-      toast('toast-gh-update', false, 'Check for updates first');
+  async function stagedUpdateInstall() {
+    if (!_stagedUpdateInfo || !_stagedUpdateInfo.update_available) {
+      toast('toast-staged-update', false, 'Check for updates first');
       return;
     }
-    if (!confirm(`Install ${_githubUpdateInfo.latest_version} from GitHub Pages? The device will reboot into OTA mode, update itself, and reboot again when finished.`)) return;
+    if (!confirm(`Install ${_stagedUpdateInfo.latest_version} from the OTA mirror? The device will reboot into OTA mode, update itself, and reboot again when finished.`)) return;
 
-    toast('toast-gh-update', true, 'Staging update and rebooting into OTA mode…');
+    toast('toast-staged-update', true, 'Staging update and rebooting into OTA mode…');
     try {
       const d = await api('/api/system/update', 'POST', {});
       if (!d.ok) {
-        toast('toast-gh-update', false, d.error || 'Update failed');
+        toast('toast-staged-update', false, d.error || 'Update failed');
         return;
       }
-      toast('toast-gh-update', true, 'Rebooting into OTA mode… reconnect in about 30 seconds');
+      toast('toast-staged-update', true, 'Rebooting into OTA mode… reconnect in about 30 seconds');
       setTimeout(() => location.reload(), 30000);
     } catch(e) {
-      toast('toast-gh-update', false, 'Update failed — check the network connection');
+      toast('toast-staged-update', false, 'Update failed — check the network connection');
     }
   }
 

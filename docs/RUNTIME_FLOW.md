@@ -13,7 +13,7 @@ High-level boot path:
 4. `gpio_manager_init()`
 5. `wifi_init()`
 6. `ota_manager_start_pending_job()`
-   - if a staged GitHub OTA job exists, OTA mode takes ownership of the boot
+   - if a staged OTA update job exists, OTA mode takes ownership of the boot
 7. if OTA mode did not take over:
    - `mqtt_init()`
    - `system_runtime_init()`
@@ -129,7 +129,7 @@ Important rule:
 - manual OTA is immediate
 - it does not use staged OTA mode
 
-## 7. GitHub OTA staged flow
+## 7. Staged OTA flow
 
 Owners:
 
@@ -143,7 +143,7 @@ HTTP/UI phase:
 3. `web_manager` fetches the latest GitHub Pages `ota-manifest.json`
 4. selected release info is cached in RAM
 5. UI calls `POST /api/system/update`
-6. `web_manager` stages the OTA job in NVS via `ota_manager_stage_github_job(...)`
+6. `web_manager` stages the OTA job in NVS via `ota_manager_stage_update_job(...)`
 7. device reboots
 
 Important note:

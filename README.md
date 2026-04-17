@@ -230,7 +230,7 @@ Board metadata for build aliases, installer options, and release asset naming is
 | Port busy | Monitor open elsewhere | Close monitor with `Ctrl+T`, then `Ctrl+X` |
 | Build fails after fullclean | Target/profile mismatch | Re-run with `scripts/idf-target.sh <target> reconfigure` |
 | Can't connect to AP WiFi | BLE scan is active during AP transition | Reboot and retry, AP should pause BLE scanning automatically |
-| GitHub OTA fails | No internet access or release metadata/assets are unavailable | Check STA connectivity and the latest release assets |
+| Staged OTA fails | No internet access or the published OTA metadata/assets are unavailable | Check STA connectivity and the latest release assets |
 | BLE device does not decrypt | Wrong key or key out of sync | Check the key in the Shelly app, then update or re-register the device |
 
 ## License

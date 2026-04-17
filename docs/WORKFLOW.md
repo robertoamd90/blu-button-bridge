@@ -336,10 +336,10 @@ Use `## Notes` only for short exceptional context such as:
 
 ### OTA changes
 
-Test all of the following when OTA logic changes:
+Test all of the following when staged OTA logic changes:
 
-- GitHub OTA success path
-- GitHub OTA failure path
+- staged OTA success path
+- staged OTA failure path
 - recovery to normal boot after failure
 - manual upload OTA still works
 

@@ -46,7 +46,7 @@ All routes below require auth when HTTP Basic Auth is enabled.
 | `GET` | `/api/system/auth` | Response shape documented here |
 | `POST` | `/api/system/auth` | JSON body documented here |
 | `GET` | `/api/system/update/check` | Response shape documented here |
-| `POST` | `/api/system/update` | Stages GitHub OTA job |
+| `POST` | `/api/system/update` | Stages OTA update job |
 | `POST` | `/api/system/ota` | Raw binary upload |
 | `GET` | `/api/system/config` | Backup export contract documented here |
 | `POST` | `/api/system/config` | Restore contract documented here |

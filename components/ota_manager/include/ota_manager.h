@@ -5,12 +5,12 @@
 
 typedef struct ota_upload_session ota_upload_session_t;
 
-// Stores a staged GitHub OTA job for execution after reboot.
-esp_err_t ota_manager_stage_github_job(const char *version_label,
+// Stores a staged OTA update job for execution after reboot.
+esp_err_t ota_manager_stage_update_job(const char *version_label,
                                        const char *download_url,
                                        const char *digest_hex);
 
-// Starts OTA mode in a dedicated task when a staged GitHub OTA job is pending.
+// Starts OTA mode in a dedicated task when a staged OTA update job is pending.
 // Returns true when OTA mode took ownership of the current boot.
 bool ota_manager_start_pending_job(void);
 

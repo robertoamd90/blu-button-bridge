@@ -31,8 +31,8 @@ When the change touches a specific area, validate at least:
 
 ### OTA
 
-- GitHub OTA success path
-- GitHub OTA failure path
+- staged OTA success path
+- staged OTA failure path
 - recovery to normal boot after failure
 - manual upload still works
 

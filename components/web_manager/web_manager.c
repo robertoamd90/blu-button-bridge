@@ -1687,7 +1687,7 @@ static esp_err_t handle_update_install(httpd_req_t *req)
         return send_error(req, "no newer published update is available");
     }
 
-    esp_err_t err = ota_manager_stage_github_job(s_last_ota_release.version_label,
+    esp_err_t err = ota_manager_stage_update_job(s_last_ota_release.version_label,
                                                  s_last_ota_release.download_url,
                                                  s_last_ota_release.digest_hex);
     ota_unlock();
