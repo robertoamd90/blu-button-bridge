@@ -20,6 +20,7 @@ High-level boot path:
    - `ble_access_init()`
    - `auth_manager_init()`
    - `web_manager_init()`
+     - `web_manager` stays offline if `auth_manager` is not healthy enough to protect routes
 
 ## 2. WiFi / MQTT / LED wiring
 

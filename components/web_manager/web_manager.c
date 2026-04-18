@@ -1532,6 +1532,13 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
 
 void web_manager_init(void)
 {
+    esp_err_t auth_status = auth_manager_status();
+    if (auth_status != ESP_OK) {
+        ESP_LOGE(TAG, "Auth manager unavailable, HTTP server not started: %s",
+                 esp_err_to_name(auth_status));
+        return;
+    }
+
     if (!s_ota_mutex) {
         s_ota_mutex = xSemaphoreCreateMutex();
     }

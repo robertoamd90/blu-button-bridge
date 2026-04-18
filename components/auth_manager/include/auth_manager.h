@@ -9,6 +9,7 @@
 #define AUTH_MANAGER_PASSWORD_MAX 64
 
 void auth_manager_init(void);
+esp_err_t auth_manager_status(void);
 bool auth_manager_require(httpd_req_t *req);
 
 cJSON *auth_manager_config_export(void);

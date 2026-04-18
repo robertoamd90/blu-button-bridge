@@ -23,6 +23,7 @@ typedef struct {
 
 static auth_config_t s_auth_cfg = {0};
 static SemaphoreHandle_t s_auth_mutex = NULL;
+static esp_err_t s_auth_status = ESP_ERR_INVALID_STATE;
 
 static bool auth_config_has_password(const auth_config_t *cfg)
 {
@@ -65,25 +66,46 @@ static esp_err_t auth_save_config_locked(const auth_config_t *cfg)
     return err;
 }
 
-static void auth_load_config(void)
+static esp_err_t auth_load_optional_str(nvs_handle_t nvs,
+                                        const char *key,
+                                        char *out,
+                                        size_t out_len)
+{
+    size_t len = out_len;
+    esp_err_t err = nvs_get_str(nvs, key, out, &len);
+    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    return err;
+}
+
+static esp_err_t auth_load_config(void)
 {
     memset(&s_auth_cfg, 0, sizeof(s_auth_cfg));
 
     nvs_handle_t nvs;
-    if (nvs_open(AUTH_NS, NVS_READONLY, &nvs) != ESP_OK) return;
+    esp_err_t err = nvs_open(AUTH_NS, NVS_READONLY, &nvs);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    if (err != ESP_OK) return err;
 
     char enabled[4] = {0};
     size_t len = sizeof(enabled);
-    if (nvs_get_str(nvs, "enabled", enabled, &len) == ESP_OK) {
+    err = nvs_get_str(nvs, "enabled", enabled, &len);
+    if (err == ESP_OK) {
         s_auth_cfg.enabled = (enabled[0] == '1');
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(nvs);
+        return err;
     }
 
-    len = sizeof(s_auth_cfg.username);
-    nvs_get_str(nvs, "user", s_auth_cfg.username, &len);
+    err = auth_load_optional_str(nvs, "user", s_auth_cfg.username, sizeof(s_auth_cfg.username));
+    if (err != ESP_OK) {
+        nvs_close(nvs);
+        return err;
+    }
 
-    len = sizeof(s_auth_cfg.password_sha256);
-    nvs_get_str(nvs, "pass_sha", s_auth_cfg.password_sha256, &len);
+    err = auth_load_optional_str(nvs, "pass_sha", s_auth_cfg.password_sha256,
+                                 sizeof(s_auth_cfg.password_sha256));
     nvs_close(nvs);
+    return err;
 }
 
 static void auth_snapshot_config(auth_config_t *out)
@@ -162,19 +184,35 @@ static bool send_auth_challenge(httpd_req_t *req)
 
 void auth_manager_init(void)
 {
-    if (s_auth_mutex) return;
+    if (s_auth_status == ESP_OK) return;
 
-    s_auth_mutex = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(s_auth_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_auth_mutex) {
+        s_auth_mutex = xSemaphoreCreateMutex();
+    }
+    if (!s_auth_mutex) {
+        s_auth_status = ESP_ERR_NO_MEM;
+        ESP_LOGE(TAG, "Failed to allocate auth mutex");
+        return;
+    }
 
-    auth_load_config();
+    s_auth_status = auth_load_config();
+    if (s_auth_status != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to load auth config: %s", esp_err_to_name(s_auth_status));
+        return;
+    }
+}
+
+esp_err_t auth_manager_status(void)
+{
+    return s_auth_status;
 }
 
 bool auth_manager_require(httpd_req_t *req)
 {
     if (!req) return false;
-    if (!s_auth_mutex) {
-        ESP_LOGE(TAG, "Auth manager unavailable");
+    esp_err_t status = auth_manager_status();
+    if (status != ESP_OK) {
+        ESP_LOGE(TAG, "Auth manager unavailable: %s", esp_err_to_name(status));
         return send_auth_challenge(req);
     }
 
