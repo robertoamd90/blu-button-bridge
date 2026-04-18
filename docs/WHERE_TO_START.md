@@ -70,6 +70,8 @@ Look for:
 
 Start with:
 
+- `components/auth_manager/auth_manager.c`
+- `components/auth_manager/include/auth_manager.h`
 - `components/web_manager/web_manager.c`
 - `components/web_manager/index.html`
 - `docs/API_CONTRACTS.md`
@@ -79,6 +81,7 @@ Look for:
 
 - whether auth is optional or enforced
 - which routes and assets are protected
+- route registration in `web_manager` vs auth ownership in `auth_manager`
 - browser-native auth expectations
 - configuration request/response shape
 
@@ -139,6 +142,8 @@ Start with:
 - `components/web_manager/web_manager.c`
 - `components/web_manager/index.html`
 - module-owned backup helpers and persisted config owners in:
+  - `components/auth_manager/auth_manager.c`
+  - `components/auth_manager/include/auth_manager.h` (`auth_manager_backup_export`, `auth_manager_backup_import`)
   - `components/wifi_manager/wifi_manager.c`
   - `components/wifi_manager/include/wifi_manager.h` (`wifi_backup_export`, `wifi_backup_import`)
   - `components/mqtt_manager/mqtt_manager.c`
@@ -153,7 +158,7 @@ Look for:
 
 - top-level HTTP envelope in `web_manager`
 - frontend backup/restore call sites in `index.html`
-- `auth` as the config section that still stays owned by `web_manager`
+- `auth` as the config section owned by `auth_manager`
 - module-owned backup/export helpers in the domain component that owns the section
 - exported JSON shape
 - restore tolerance vs strict validation
