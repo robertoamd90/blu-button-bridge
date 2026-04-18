@@ -15,13 +15,17 @@ static const char *AUTH_NS = "http_auth";
 
 typedef struct {
     bool enabled;
-    bool password_set;
     char username[AUTH_MANAGER_USERNAME_MAX + 1];
     char password_sha256[AUTH_HASH_HEX_LEN];
 } auth_config_t;
 
 static auth_config_t s_auth_cfg = {0};
 static SemaphoreHandle_t s_auth_mutex = NULL;
+
+static bool auth_config_has_password(const auth_config_t *cfg)
+{
+    return cfg && strlen(cfg->password_sha256) == AUTH_HASH_HEX_LEN - 1;
+}
 
 static void bytes_to_hex(const uint8_t *in, size_t len, char *out)
 {
@@ -77,7 +81,6 @@ static void auth_load_config(void)
 
     len = sizeof(s_auth_cfg.password_sha256);
     nvs_get_str(nvs, "pass_sha", s_auth_cfg.password_sha256, &len);
-    s_auth_cfg.password_set = (strlen(s_auth_cfg.password_sha256) == AUTH_HASH_HEX_LEN - 1);
     nvs_close(nvs);
 }
 
@@ -107,11 +110,10 @@ static bool auth_password_hash_copy(const char *input, char out[AUTH_HASH_HEX_LE
     return true;
 }
 
-static esp_err_t auth_apply_config_candidate(const auth_config_t *next, const char **out_error)
+static esp_err_t auth_validate_candidate(const auth_config_t *next, const char **out_error)
 {
     if (!next) return ESP_ERR_INVALID_ARG;
     if (out_error) *out_error = NULL;
-    if (!s_auth_mutex) return ESP_ERR_INVALID_STATE;
 
     if (next->enabled && next->username[0] == '\0') {
         if (out_error) *out_error = "username required when auth is enabled";
@@ -121,13 +123,22 @@ static esp_err_t auth_apply_config_candidate(const auth_config_t *next, const ch
         if (out_error) *out_error = "username cannot contain ':'";
         return ESP_ERR_INVALID_ARG;
     }
-    if (next->enabled && !next->password_set) {
+    if (next->enabled && !auth_config_has_password(next)) {
         if (out_error) *out_error = "password required when auth is enabled";
         return ESP_ERR_INVALID_ARG;
     }
 
+    return ESP_OK;
+}
+
+static esp_err_t auth_apply_config_candidate(const auth_config_t *next, const char **out_error)
+{
+    esp_err_t err = auth_validate_candidate(next, out_error);
+    if (err != ESP_OK) return err;
+    if (!s_auth_mutex) return ESP_ERR_INVALID_STATE;
+
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-    esp_err_t err = auth_save_config_locked(next);
+    err = auth_save_config_locked(next);
     if (err == ESP_OK) s_auth_cfg = *next;
     xSemaphoreGive(s_auth_mutex);
 
@@ -163,7 +174,7 @@ bool auth_manager_require(httpd_req_t *req)
     auth_snapshot_config(&cfg);
 
     if (!cfg.enabled) return true;
-    if (!cfg.password_set || cfg.username[0] == '\0') return send_auth_challenge(req);
+    if (!auth_config_has_password(&cfg) || cfg.username[0] == '\0') return send_auth_challenge(req);
 
     size_t hdr_len = httpd_req_get_hdr_value_len(req, "Authorization");
     if (hdr_len == 0) return send_auth_challenge(req);
@@ -210,7 +221,7 @@ cJSON *auth_manager_config_export(void)
     if (!obj) return NULL;
     if (!cJSON_AddBoolToObject(obj, "enabled", cfg.enabled) ||
         !cJSON_AddStringToObject(obj, "username", cfg.username) ||
-        !cJSON_AddBoolToObject(obj, "password_set", cfg.password_set)) {
+        !cJSON_AddBoolToObject(obj, "password_set", auth_config_has_password(&cfg))) {
         cJSON_Delete(obj);
         return NULL;
     }
@@ -252,12 +263,9 @@ esp_err_t auth_manager_config_update_from_json(const cJSON *root_obj, const char
         }
         if (pass_item->valuestring[0] == '\0') {
             next.password_sha256[0] = '\0';
-            next.password_set = false;
         } else if (!sha256_hex(pass_item->valuestring, next.password_sha256)) {
             if (out_error) *out_error = "password hashing failed";
             return ESP_ERR_INVALID_ARG;
-        } else {
-            next.password_set = true;
         }
     }
 
@@ -275,7 +283,7 @@ bool auth_manager_backup_export(cJSON *root)
     auth_snapshot_config(&cfg);
     if (!cJSON_AddBoolToObject(auth, "enabled", cfg.enabled) ||
         !cJSON_AddStringToObject(auth, "username", cfg.username) ||
-        !cJSON_AddBoolToObject(auth, "password_set", cfg.password_set) ||
+        !cJSON_AddBoolToObject(auth, "password_set", auth_config_has_password(&cfg)) ||
         !cJSON_AddStringToObject(auth, "password_sha256", cfg.password_sha256)) {
         return false;
     }
@@ -311,25 +319,12 @@ esp_err_t auth_manager_backup_import(const cJSON *root_obj, const char **out_err
     if (cJSON_IsString(password_hash_item)) {
         if (password_hash_item->valuestring[0] == '\0') {
             next.password_sha256[0] = '\0';
-            next.password_set = false;
         } else if (!auth_password_hash_copy(password_hash_item->valuestring, next.password_sha256)) {
             if (out_error) *out_error = "invalid auth password hash in backup";
             return ESP_ERR_INVALID_ARG;
-        } else {
-            next.password_set = true;
         }
     } else if (cJSON_IsBool(password_set_item) && !cJSON_IsTrue(password_set_item)) {
         next.password_sha256[0] = '\0';
-        next.password_set = false;
-    }
-
-    if (next.enabled && next.username[0] == '\0') {
-        if (out_error) *out_error = "backup enables auth without a username";
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (next.enabled && !next.password_set) {
-        if (out_error) *out_error = "backup enables auth without a password hash";
-        return ESP_ERR_INVALID_ARG;
     }
 
     return auth_apply_config_candidate(&next, out_error);

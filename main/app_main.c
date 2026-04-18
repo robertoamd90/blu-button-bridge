@@ -9,6 +9,7 @@
 #include "system_runtime.h"
 #include "console_manager.h"
 #include "ota_manager.h"
+#include "auth_manager.h"
 
 // ── app_main ──────────────────────────────────────────────────────────────────
 
@@ -55,5 +56,6 @@ void app_main(void)
     mqtt_init();
     system_runtime_init();
     ble_access_init();
+    ESP_ERROR_CHECK(auth_manager_init());
     web_manager_init();
 }

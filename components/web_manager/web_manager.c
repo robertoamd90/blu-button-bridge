@@ -1532,11 +1532,6 @@ static esp_err_t handle_config_restore(httpd_req_t *req)
 
 void web_manager_init(void)
 {
-    esp_err_t auth_err = auth_manager_init();
-    if (auth_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to init auth manager: %s", esp_err_to_name(auth_err));
-        return;
-    }
     if (!s_ota_mutex) {
         s_ota_mutex = xSemaphoreCreateMutex();
     }

@@ -18,6 +18,7 @@ High-level boot path:
    - `mqtt_init()`
    - `system_runtime_init()`
    - `ble_access_init()`
+   - `auth_manager_init()`
    - `web_manager_init()`
 
 ## 2. WiFi / MQTT / LED wiring
