@@ -695,6 +695,7 @@ Top-level sections:
 Notable details:
 
 - `auth.password_sha256` is exported, not the cleartext password
+- backup export no longer emits `auth.password_set`; restore ignores legacy `auth.password_set` when present
 - BLE runtime telemetry is **not** exported
 - BLE device mappings now use the nested `button_count` + `buttons[]` schema
 - OTA staged job state is **not** part of backup/restore

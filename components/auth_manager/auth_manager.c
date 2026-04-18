@@ -88,7 +88,10 @@ static void auth_load_config(void)
 
 static void auth_snapshot_config(auth_config_t *out)
 {
-    if (!out || !s_auth_mutex) return;
+    if (!out) return;
+
+    memset(out, 0, sizeof(*out));
+    if (!s_auth_mutex) return;
 
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
     *out = s_auth_cfg;
@@ -162,10 +165,7 @@ void auth_manager_init(void)
     if (s_auth_mutex) return;
 
     s_auth_mutex = xSemaphoreCreateMutex();
-    if (!s_auth_mutex) {
-        ESP_LOGE(TAG, "Failed to allocate auth mutex");
-        return;
-    }
+    ESP_ERROR_CHECK(s_auth_mutex ? ESP_OK : ESP_ERR_NO_MEM);
 
     auth_load_config();
 }
@@ -173,8 +173,12 @@ void auth_manager_init(void)
 bool auth_manager_require(httpd_req_t *req)
 {
     if (!req) return false;
+    if (!s_auth_mutex) {
+        ESP_LOGE(TAG, "Auth manager unavailable");
+        return send_auth_challenge(req);
+    }
 
-    auth_config_t cfg = {0};
+    auth_config_t cfg;
     auth_snapshot_config(&cfg);
 
     if (!cfg.enabled) return true;
@@ -218,7 +222,7 @@ cJSON *auth_manager_config_export(void)
 {
     if (!s_auth_mutex) return NULL;
 
-    auth_config_t cfg = {0};
+    auth_config_t cfg;
     auth_snapshot_config(&cfg);
 
     cJSON *obj = cJSON_CreateObject();
@@ -245,7 +249,7 @@ esp_err_t auth_manager_config_update_from_json(const cJSON *root_obj, const char
     cJSON *user_item = cJSON_GetObjectItemCaseSensitive(root, "username");
     cJSON *pass_item = cJSON_GetObjectItemCaseSensitive(root, "password");
 
-    auth_config_t next = {0};
+    auth_config_t next;
     auth_snapshot_config(&next);
 
     if (cJSON_IsBool(enabled_item)) next.enabled = cJSON_IsTrue(enabled_item);
@@ -283,11 +287,10 @@ bool auth_manager_backup_export(cJSON *root)
     cJSON *auth = cJSON_AddObjectToObject(root, "auth");
     if (!auth) return false;
 
-    auth_config_t cfg = {0};
+    auth_config_t cfg;
     auth_snapshot_config(&cfg);
     if (!cJSON_AddBoolToObject(auth, "enabled", cfg.enabled) ||
         !cJSON_AddStringToObject(auth, "username", cfg.username) ||
-        !cJSON_AddBoolToObject(auth, "password_set", auth_config_has_password(&cfg)) ||
         !cJSON_AddStringToObject(auth, "password_sha256", cfg.password_sha256)) {
         return false;
     }
@@ -303,12 +306,11 @@ esp_err_t auth_manager_backup_import(const cJSON *root_obj, const char **out_err
     cJSON *auth = cJSON_GetObjectItemCaseSensitive(root, "auth");
     if (!auth) return ESP_OK;
 
-    auth_config_t next = {0};
+    auth_config_t next;
     auth_snapshot_config(&next);
 
     cJSON *enabled_item = cJSON_GetObjectItemCaseSensitive(auth, "enabled");
     cJSON *user_item = cJSON_GetObjectItemCaseSensitive(auth, "username");
-    cJSON *password_set_item = cJSON_GetObjectItemCaseSensitive(auth, "password_set");
     cJSON *password_hash_item = cJSON_GetObjectItemCaseSensitive(auth, "password_sha256");
 
     if (cJSON_IsBool(enabled_item)) next.enabled = cJSON_IsTrue(enabled_item);
@@ -327,8 +329,6 @@ esp_err_t auth_manager_backup_import(const cJSON *root_obj, const char **out_err
             if (out_error) *out_error = "invalid auth password hash in backup";
             return ESP_ERR_INVALID_ARG;
         }
-    } else if (cJSON_IsBool(password_set_item) && !cJSON_IsTrue(password_set_item)) {
-        next.password_sha256[0] = '\0';
     }
 
     return auth_apply_config_candidate(&next, out_error);
