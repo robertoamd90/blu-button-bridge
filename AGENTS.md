@@ -139,6 +139,7 @@ If tooling is unstable, say that explicitly instead of claiming review is comple
 
 ## Git / PR rules
 
+- Follow [docs/WORKFLOW.md](docs/WORKFLOW.md) for the explicit user-confirmation gate before git or GitHub actions.
 - Do not delete merged branches unless the user explicitly asks.
 - Ask before tagging `@codex review` on GitHub PRs.
 - Use `branch + PR` for refactors, new modules, behavior changes, and structurally meaningful work.

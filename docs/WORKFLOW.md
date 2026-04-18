@@ -11,6 +11,13 @@ For normal feature or fix work:
 3. let the user test on the board
 4. only after successful validation and any user-requested review proceed with commit / PR / merge
 
+Important gate:
+
+- after validation and any user-requested review, stop and wait for the user's explicit instruction for the next git or GitHub step in the current task
+- git or GitHub steps include at least: commit, push, PR creation/update, merge, issue comment/closure, and tag creation
+- once the user has explicitly asked to continue a merge or release flow in the current task, perform the normal issue-closure and tagging steps within that confirmed flow
+- do not interpret step 4 as permission to proceed autonomously
+
 Examples:
 
 - `source ~/esp/esp-idf-v6.0/export.sh && scripts/idf-target.sh esp32-devkit-v1 flash`
@@ -245,6 +252,7 @@ Use `branch + PR` for:
 - anything that materially affects architecture or runtime flow
 
 Direct commits to `main` are acceptable only when explicitly aligned with the user for small, contained work.
+Opening or updating a PR, pushing commits, or merging still follows the explicit confirmation gate in section 1.
 
 ### Issue closure
 
