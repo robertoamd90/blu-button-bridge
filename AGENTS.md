@@ -139,6 +139,8 @@ If tooling is unstable, say that explicitly instead of claiming review is comple
 
 ## Git / PR rules
 
+- Do not commit, push, open PRs, merge, comment on GitHub, close issues, or create tags unless the user explicitly asks for that action in the current task.
+- After validation or review, stop and wait for explicit user confirmation before any git or GitHub action.
 - Do not delete merged branches unless the user explicitly asks.
 - Ask before tagging `@codex review` on GitHub PRs.
 - Use `branch + PR` for refactors, new modules, behavior changes, and structurally meaningful work.

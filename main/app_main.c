@@ -56,6 +56,6 @@ void app_main(void)
     mqtt_init();
     system_runtime_init();
     ble_access_init();
-    ESP_ERROR_CHECK(auth_manager_init());
+    auth_manager_init();
     web_manager_init();
 }

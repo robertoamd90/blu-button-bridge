@@ -5,12 +5,14 @@
 #include "mbedtls/base64.h"
 #include "mbedtls/md.h"
 #include "nvs.h"
+#include "esp_log.h"
 #include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "auth_manager.h"
 
 static const char *AUTH_NS = "http_auth";
+static const char *TAG = "auth_manager";
 #define AUTH_HASH_HEX_LEN 65
 
 typedef struct {
@@ -155,15 +157,17 @@ static bool send_auth_challenge(httpd_req_t *req)
     return false;
 }
 
-esp_err_t auth_manager_init(void)
+void auth_manager_init(void)
 {
-    if (s_auth_mutex) return ESP_OK;
+    if (s_auth_mutex) return;
 
     s_auth_mutex = xSemaphoreCreateMutex();
-    if (!s_auth_mutex) return ESP_ERR_NO_MEM;
+    if (!s_auth_mutex) {
+        ESP_LOGE(TAG, "Failed to allocate auth mutex");
+        return;
+    }
 
     auth_load_config();
-    return ESP_OK;
 }
 
 bool auth_manager_require(httpd_req_t *req)
