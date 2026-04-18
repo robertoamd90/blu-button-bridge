@@ -2,11 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
-#include "mbedtls/base64.h"
 #include "mbedtls/md.h"
 #include "nvs.h"
 #include "esp_log.h"
-#include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "auth_manager.h"
@@ -20,6 +18,23 @@ typedef struct {
     char username[AUTH_MANAGER_USERNAME_MAX + 1];
     char password_sha256[AUTH_HASH_HEX_LEN];
 } auth_config_t;
+
+typedef enum {
+    AUTH_SECRET_NONE = 0,
+    AUTH_SECRET_PLAINTEXT,
+    AUTH_SECRET_SHA256,
+} auth_secret_kind_t;
+
+typedef struct {
+    const cJSON *enabled_item;
+    const cJSON *username_item;
+    const cJSON *secret_item;
+    auth_secret_kind_t secret_kind;
+    const char *username_too_long_error;
+    const char *username_invalid_error;
+    const char *secret_too_long_error;
+    const char *secret_invalid_error;
+} auth_candidate_input_t;
 
 static auth_config_t s_auth_cfg = {0};
 static SemaphoreHandle_t s_auth_mutex = NULL;
@@ -162,7 +177,7 @@ static esp_err_t auth_apply_config_candidate(const auth_config_t *next, const ch
 {
     esp_err_t err = auth_validate_candidate(next, out_error);
     if (err != ESP_OK) return err;
-    if (!s_auth_mutex) return ESP_ERR_INVALID_STATE;
+    if (auth_manager_status() != ESP_OK || !s_auth_mutex) return ESP_ERR_INVALID_STATE;
 
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
     err = auth_save_config_locked(next);
@@ -173,13 +188,57 @@ static esp_err_t auth_apply_config_candidate(const auth_config_t *next, const ch
     return err;
 }
 
-static bool send_auth_challenge(httpd_req_t *req)
+static esp_err_t auth_candidate_from_input(const auth_candidate_input_t *input,
+                                           auth_config_t *next,
+                                           const char **out_error)
 {
-    httpd_resp_set_status(req, "401 Unauthorized");
-    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"BluButtonBridge\"");
-    httpd_resp_set_type(req, "text/plain");
-    httpd_resp_sendstr(req, "Authentication required");
-    return false;
+    if (!input || !next) return ESP_ERR_INVALID_ARG;
+
+    auth_snapshot_config(next);
+
+    if (cJSON_IsBool(input->enabled_item)) next->enabled = cJSON_IsTrue(input->enabled_item);
+    if (cJSON_IsString(input->username_item)) {
+        if (strlen(input->username_item->valuestring) > AUTH_MANAGER_USERNAME_MAX) {
+            if (out_error) *out_error = input->username_too_long_error;
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (!auth_username_is_valid(input->username_item->valuestring)) {
+            if (out_error) *out_error = input->username_invalid_error;
+            return ESP_ERR_INVALID_ARG;
+        }
+        strlcpy(next->username, input->username_item->valuestring, sizeof(next->username));
+    }
+
+    if (!cJSON_IsString(input->secret_item)) return ESP_OK;
+
+    if (input->secret_kind == AUTH_SECRET_PLAINTEXT) {
+        if (strlen(input->secret_item->valuestring) > AUTH_MANAGER_PASSWORD_MAX) {
+            if (out_error) *out_error = input->secret_too_long_error;
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (input->secret_item->valuestring[0] == '\0') {
+            next->password_sha256[0] = '\0';
+            return ESP_OK;
+        }
+        if (!sha256_hex(input->secret_item->valuestring, next->password_sha256)) {
+            if (out_error) *out_error = input->secret_invalid_error;
+            return ESP_ERR_INVALID_ARG;
+        }
+        return ESP_OK;
+    }
+
+    if (input->secret_kind == AUTH_SECRET_SHA256) {
+        if (input->secret_item->valuestring[0] == '\0') {
+            next->password_sha256[0] = '\0';
+            return ESP_OK;
+        }
+        if (!auth_password_hash_copy(input->secret_item->valuestring, next->password_sha256)) {
+            if (out_error) *out_error = input->secret_invalid_error;
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    return ESP_OK;
 }
 
 void auth_manager_init(void)
@@ -207,58 +266,34 @@ esp_err_t auth_manager_status(void)
     return s_auth_status;
 }
 
-bool auth_manager_require(httpd_req_t *req)
+bool auth_manager_is_enabled(void)
 {
-    if (!req) return false;
-    esp_err_t status = auth_manager_status();
-    if (status != ESP_OK) {
-        ESP_LOGE(TAG, "Auth manager unavailable: %s", esp_err_to_name(status));
-        return send_auth_challenge(req);
-    }
+    if (auth_manager_status() != ESP_OK) return false;
 
     auth_config_t cfg;
     auth_snapshot_config(&cfg);
+    return cfg.enabled;
+}
 
-    if (!cfg.enabled) return true;
-    if (!auth_config_has_password(&cfg) || cfg.username[0] == '\0') return send_auth_challenge(req);
+bool auth_manager_verify_credentials(const char *username, const char *password)
+{
+    if (auth_manager_status() != ESP_OK || !username || !password) return false;
 
-    size_t hdr_len = httpd_req_get_hdr_value_len(req, "Authorization");
-    if (hdr_len == 0) return send_auth_challenge(req);
-
-    char header[160];
-    if (hdr_len >= sizeof(header)) return send_auth_challenge(req);
-    if (httpd_req_get_hdr_value_str(req, "Authorization", header, sizeof(header)) != ESP_OK) {
-        return send_auth_challenge(req);
-    }
-    if (strncmp(header, "Basic ", 6) != 0) return send_auth_challenge(req);
-
-    unsigned char decoded[AUTH_MANAGER_USERNAME_MAX + AUTH_MANAGER_PASSWORD_MAX + 4];
-    size_t decoded_len = 0;
-    if (mbedtls_base64_decode(decoded, sizeof(decoded) - 1, &decoded_len,
-                              (const unsigned char *)(header + 6),
-                              strlen(header + 6)) != 0) {
-        return send_auth_challenge(req);
-    }
-    decoded[decoded_len] = '\0';
-
-    char *sep = strchr((char *)decoded, ':');
-    if (!sep) return send_auth_challenge(req);
-    *sep = '\0';
-
-    const char *username = (const char *)decoded;
-    const char *password = sep + 1;
-    if (strcmp(username, cfg.username) != 0) return send_auth_challenge(req);
+    auth_config_t cfg;
+    auth_snapshot_config(&cfg);
+    if (!cfg.enabled || !auth_config_has_password(&cfg) || cfg.username[0] == '\0') return false;
+    if (strcmp(username, cfg.username) != 0) return false;
 
     char password_sha256[AUTH_HASH_HEX_LEN];
-    if (!sha256_hex(password, password_sha256)) return send_auth_challenge(req);
-    if (strcmp(password_sha256, cfg.password_sha256) != 0) return send_auth_challenge(req);
+    if (!sha256_hex(password, password_sha256)) return false;
+    if (strcmp(password_sha256, cfg.password_sha256) != 0) return false;
 
     return true;
 }
 
 cJSON *auth_manager_config_export(void)
 {
-    if (!s_auth_mutex) return NULL;
+    if (auth_manager_status() != ESP_OK || !s_auth_mutex) return NULL;
 
     auth_config_t cfg;
     auth_snapshot_config(&cfg);
@@ -283,44 +318,26 @@ esp_err_t auth_manager_config_update_from_json(const cJSON *root_obj, const char
     }
 
     cJSON *root = (cJSON *)root_obj;
-    cJSON *enabled_item = cJSON_GetObjectItemCaseSensitive(root, "enabled");
-    cJSON *user_item = cJSON_GetObjectItemCaseSensitive(root, "username");
-    cJSON *pass_item = cJSON_GetObjectItemCaseSensitive(root, "password");
-
     auth_config_t next;
-    auth_snapshot_config(&next);
-
-    if (cJSON_IsBool(enabled_item)) next.enabled = cJSON_IsTrue(enabled_item);
-    if (cJSON_IsString(user_item)) {
-        if (strlen(user_item->valuestring) > AUTH_MANAGER_USERNAME_MAX) {
-            if (out_error) *out_error = "username too long";
-            return ESP_ERR_INVALID_ARG;
-        }
-        if (!auth_username_is_valid(user_item->valuestring)) {
-            if (out_error) *out_error = "username cannot contain ':'";
-            return ESP_ERR_INVALID_ARG;
-        }
-        strlcpy(next.username, user_item->valuestring, sizeof(next.username));
-    }
-    if (cJSON_IsString(pass_item)) {
-        if (strlen(pass_item->valuestring) > AUTH_MANAGER_PASSWORD_MAX) {
-            if (out_error) *out_error = "password too long";
-            return ESP_ERR_INVALID_ARG;
-        }
-        if (pass_item->valuestring[0] == '\0') {
-            next.password_sha256[0] = '\0';
-        } else if (!sha256_hex(pass_item->valuestring, next.password_sha256)) {
-            if (out_error) *out_error = "password hashing failed";
-            return ESP_ERR_INVALID_ARG;
-        }
-    }
+    auth_candidate_input_t input = {
+        .enabled_item = cJSON_GetObjectItemCaseSensitive(root, "enabled"),
+        .username_item = cJSON_GetObjectItemCaseSensitive(root, "username"),
+        .secret_item = cJSON_GetObjectItemCaseSensitive(root, "password"),
+        .secret_kind = AUTH_SECRET_PLAINTEXT,
+        .username_too_long_error = "username too long",
+        .username_invalid_error = "username cannot contain ':'",
+        .secret_too_long_error = "password too long",
+        .secret_invalid_error = "password hashing failed",
+    };
+    esp_err_t err = auth_candidate_from_input(&input, &next, out_error);
+    if (err != ESP_OK) return err;
 
     return auth_apply_config_candidate(&next, out_error);
 }
 
 bool auth_manager_backup_export(cJSON *root)
 {
-    if (!root || !s_auth_mutex) return false;
+    if (!root || auth_manager_status() != ESP_OK || !s_auth_mutex) return false;
 
     cJSON *auth = cJSON_AddObjectToObject(root, "auth");
     if (!auth) return false;
@@ -345,29 +362,17 @@ esp_err_t auth_manager_backup_import(const cJSON *root_obj, const char **out_err
     if (!auth) return ESP_OK;
 
     auth_config_t next;
-    auth_snapshot_config(&next);
-
-    cJSON *enabled_item = cJSON_GetObjectItemCaseSensitive(auth, "enabled");
-    cJSON *user_item = cJSON_GetObjectItemCaseSensitive(auth, "username");
-    cJSON *password_hash_item = cJSON_GetObjectItemCaseSensitive(auth, "password_sha256");
-
-    if (cJSON_IsBool(enabled_item)) next.enabled = cJSON_IsTrue(enabled_item);
-    if (cJSON_IsString(user_item)) {
-        if (strlen(user_item->valuestring) > AUTH_MANAGER_USERNAME_MAX ||
-            !auth_username_is_valid(user_item->valuestring)) {
-            if (out_error) *out_error = "invalid auth username in backup";
-            return ESP_ERR_INVALID_ARG;
-        }
-        strlcpy(next.username, user_item->valuestring, sizeof(next.username));
-    }
-    if (cJSON_IsString(password_hash_item)) {
-        if (password_hash_item->valuestring[0] == '\0') {
-            next.password_sha256[0] = '\0';
-        } else if (!auth_password_hash_copy(password_hash_item->valuestring, next.password_sha256)) {
-            if (out_error) *out_error = "invalid auth password hash in backup";
-            return ESP_ERR_INVALID_ARG;
-        }
-    }
+    auth_candidate_input_t input = {
+        .enabled_item = cJSON_GetObjectItemCaseSensitive(auth, "enabled"),
+        .username_item = cJSON_GetObjectItemCaseSensitive(auth, "username"),
+        .secret_item = cJSON_GetObjectItemCaseSensitive(auth, "password_sha256"),
+        .secret_kind = AUTH_SECRET_SHA256,
+        .username_too_long_error = "invalid auth username in backup",
+        .username_invalid_error = "invalid auth username in backup",
+        .secret_invalid_error = "invalid auth password hash in backup",
+    };
+    esp_err_t err = auth_candidate_from_input(&input, &next, out_error);
+    if (err != ESP_OK) return err;
 
     return auth_apply_config_candidate(&next, out_error);
 }

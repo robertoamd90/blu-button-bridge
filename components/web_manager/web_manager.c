@@ -3,6 +3,7 @@
 #include <strings.h>
 #include <ctype.h>
 #include "cJSON.h"
+#include "mbedtls/base64.h"
 #include "nvs_flash.h"
 #include "esp_err.h"
 #include "esp_system.h"
@@ -59,11 +60,73 @@ static uint32_t            s_console_stream_generation = 0;
 
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
 
+static bool send_auth_challenge(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"BluButtonBridge\"");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "Authentication required");
+    return false;
+}
+
+static bool read_basic_auth_credentials(httpd_req_t *req,
+                                        char *username,
+                                        size_t username_len,
+                                        char *password,
+                                        size_t password_len)
+{
+    if (!req || !username || !password || username_len == 0 || password_len == 0) return false;
+
+    size_t hdr_len = httpd_req_get_hdr_value_len(req, "Authorization");
+    char header[160] = {0};
+    if (hdr_len == 0 ||
+        hdr_len >= sizeof(header) ||
+        httpd_req_get_hdr_value_str(req, "Authorization", header, sizeof(header)) != ESP_OK ||
+        strncmp(header, "Basic ", 6) != 0) {
+        return false;
+    }
+
+    unsigned char decoded[AUTH_MANAGER_USERNAME_MAX + AUTH_MANAGER_PASSWORD_MAX + 4];
+    size_t decoded_len = 0;
+    if (mbedtls_base64_decode(decoded, sizeof(decoded) - 1, &decoded_len,
+                              (const unsigned char *)(header + 6),
+                              strlen(header + 6)) != 0) {
+        return false;
+    }
+    decoded[decoded_len] = '\0';
+
+    char *sep = strchr((char *)decoded, ':');
+    if (!sep) return false;
+    *sep = '\0';
+
+    if (strlen((char *)decoded) >= username_len || strlen(sep + 1) >= password_len) return false;
+    strlcpy(username, (char *)decoded, username_len);
+    strlcpy(password, sep + 1, password_len);
+    return true;
+}
+
 static esp_err_t handle_with_auth(httpd_req_t *req)
 {
     route_ctx_t *ctx = (route_ctx_t *)req->user_ctx;
     if (!ctx || !ctx->inner) return ESP_FAIL;
-    if (ctx->auth_required && !auth_manager_require(req)) return ESP_OK;
+    if (ctx->auth_required) {
+        esp_err_t auth_status = auth_manager_status();
+        if (auth_status != ESP_OK) {
+            ESP_LOGE(TAG, "Auth manager unavailable: %s", esp_err_to_name(auth_status));
+            send_auth_challenge(req);
+            return ESP_OK;
+        }
+        if (auth_manager_is_enabled()) {
+            char username[AUTH_MANAGER_USERNAME_MAX + 1];
+            char password[AUTH_MANAGER_PASSWORD_MAX + 1];
+            if (!read_basic_auth_credentials(req, username, sizeof(username),
+                                             password, sizeof(password)) ||
+                !auth_manager_verify_credentials(username, password)) {
+                send_auth_challenge(req);
+                return ESP_OK;
+            }
+        }
+    }
     return ctx->inner(req);
 }
 
