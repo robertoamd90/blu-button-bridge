@@ -18,6 +18,7 @@ Before doing non-trivial work, read:
 For project-scoped Codex runtime settings, also read:
 
 - `.codex/config.toml`
+- `.codex/rules/default.rules`
 
 For review-phase Codex subagent work, also read:
 
@@ -78,6 +79,10 @@ If documents overlap or appear to conflict:
 ## Validation
 
 - Follow [docs/VALIDATION.md](docs/VALIDATION.md) for the validation ladder and fallback rules.
+- Before running build, flash, monitor, or another command that needs sandbox preapproval, read `.codex/rules/default.rules`.
+  - If the needed command is already listed there, use that exact command form.
+  - Do not substitute board IDs, targets, aliases, paths, or equivalent local variants just because they work outside the sandbox.
+  - If no listed rule matches the needed command, say so clearly before requesting or attempting a different form.
 - For non-trivial work, the default validation step is a target-aware build+flash for the active board profile, for example:
   - `source ~/esp/esp-idf-v6.0/export.sh && scripts/idf-target.sh esp32-devkit-v1 flash`
   - `source ~/esp/esp-idf-v6.0/export.sh && ESPPORT=/dev/cu.usbmodem3101 scripts/idf-target.sh esp32c3-supermini flash`

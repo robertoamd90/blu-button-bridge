@@ -23,6 +23,13 @@ Examples:
 - `source ~/esp/esp-idf-v6.0/export.sh && scripts/idf-target.sh esp32-devkit-v1 flash`
 - `source ~/esp/esp-idf-v6.0/export.sh && ESPPORT=/dev/cu.usbmodem3101 scripts/idf-target.sh esp32c3-supermini flash`
 
+Sandbox-approved command note:
+
+- before running build, flash, monitor, or any other command that needs sandbox preapproval, read `.codex/rules/default.rules`
+- if the needed command is already listed there, use the exact listed form
+- do not swap board IDs, targets, aliases, paths, or equivalent local variants to a form that is not listed
+- if no listed rule matches the needed command, report that explicitly instead of improvising a variant
+
 Behavior changes include:
 
 - firmware logic
